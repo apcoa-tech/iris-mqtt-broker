@@ -1,5 +1,7 @@
 # Mosquitto MQTT Broker Configuration Template - mqtt-2
-# This template is for the second MQTT broker in the dual-broker setup
+# DEV: Simulates the EXTERNAL COMPANY's MQTT broker
+# This broker acts as a standalone broker receiving data from mqtt-1
+# In production, this is replaced by the actual external company's infrastructure
 # DO NOT put sensitive data directly in this file
 
 # ==============================================
@@ -41,67 +43,14 @@ log_type information
 log_timestamp true
 
 # ==============================================
-# Bridge Configuration to Production Broker
+# External Company Broker - Standalone Configuration
 # ==============================================
-connection production-bridge
-
-# Remote broker address
-address ${BRIDGE_REMOTE_ADDRESS}
-
-# Bridge TLS Configuration
-bridge_cafile /mosquitto/bridge_certs/production_ca.crt
-bridge_tls_version tlsv1.3
-
-# Authentication (populated by GitHub workflow from secrets)
-remote_username ${BRIDGE_USERNAME}
-remote_password ${BRIDGE_PASSWORD}
-
-# Bridge connection settings
-cleansession false
-try_private true
-notifications false
-bridge_protocol_version mqttv311
-
-# Bridge topics - Advantech device data
-# Format: topic pattern direction QoS
-topic Advantech/74FE4857C133/# both 0
-topic Advantech/74FE4857C1B3/# both 0
-
-# Bridge startup configuration
-start_type automatic
-restart_timeout 30
-keepalive_interval 60
-
-# ==============================================
-# Bridge Configuration to Peer MQTT Broker (mqtt-1)
-# Only enabled in dev environment for redundancy
-# ==============================================
-connection peer-mqtt-1
-
-# Peer broker address (mqtt-1)
-address ${PEER_MQTT_1_ADDRESS}
-
-# Peer bridge TLS configuration (uses same certs)
-bridge_cafile /mosquitto/certs/ca.crt
-bridge_tls_version tlsv1.3
-
-# Peer authentication (uses local credentials)
-remote_username ${PEER_USERNAME}
-remote_password ${PEER_PASSWORD}
-
-# Bridge connection settings
-cleansession false
-try_private true
-notifications false
-bridge_protocol_version mqttv311
-
-# Bridge all Advantech topics bidirectionally for redundancy
-topic Advantech/# both 0
-
-# Bridge startup configuration
-start_type automatic
-restart_timeout 30
-keepalive_interval 60
+# In DEV, mqtt-2 simulates the external company's broker
+# It does NOT bridge anywhere - it's a standalone MQTT broker
+# It simply receives connections from mqtt-1 (our broker)
+#
+# No bridge configuration needed for mqtt-2 in dev environment
+# mqtt-2 acts as a passive receiver of data from mqtt-1
 
 # ==============================================
 # Performance Tuning

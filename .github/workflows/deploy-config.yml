@@ -62,7 +62,6 @@ jobs:
           echo "resource_group=$RESOURCE_GROUP" >> $GITHUB_OUTPUT
           echo "storage_account=$STORAGE_ACCOUNT" >> $GITHUB_OUTPUT
           echo "bridge_username=$BRIDGE_USERNAME" >> $GITHUB_OUTPUT
-          echo "bridge_remote_address=$BRIDGE_REMOTE_ADDRESS" >> $GITHUB_OUTPUT
           echo "local_users=$LOCAL_USERS" >> $GITHUB_OUTPUT
           echo "deploy_dual_brokers=$DEPLOY_DUAL_BROKERS" >> $GITHUB_OUTPUT
 
@@ -72,12 +71,11 @@ jobs:
             echo "file_share_config_2=$FILE_SHARE_CONFIG_2" >> $GITHUB_OUTPUT
             echo "container_group_1=$CONTAINER_GROUP_1" >> $GITHUB_OUTPUT
             echo "container_group_2=$CONTAINER_GROUP_2" >> $GITHUB_OUTPUT
-            echo "peer_mqtt_1_address=$PEER_MQTT_1_ADDRESS" >> $GITHUB_OUTPUT
-            echo "peer_mqtt_2_address=$PEER_MQTT_2_ADDRESS" >> $GITHUB_OUTPUT
-            echo "peer_username=$PEER_USERNAME" >> $GITHUB_OUTPUT
+            echo "external_broker_address=$EXTERNAL_BROKER_ADDRESS" >> $GITHUB_OUTPUT
           else
             echo "file_share_config=$FILE_SHARE_CONFIG" >> $GITHUB_OUTPUT
             echo "container_group=$CONTAINER_GROUP" >> $GITHUB_OUTPUT
+            echo "bridge_remote_address=$BRIDGE_REMOTE_ADDRESS" >> $GITHUB_OUTPUT
           fi
 
           echo "✅ Environment: ${{ env.ENVIRONMENT }}"
@@ -102,27 +100,20 @@ jobs:
           echo "::add-mask::$BRIDGE_PASSWORD"
           echo "BRIDGE_PASSWORD=$BRIDGE_PASSWORD" >> $GITHUB_ENV
 
-          # Peer bridge password (for dual broker setup)
-          if [ "${{ steps.env.outputs.deploy_dual_brokers }}" = "true" ]; then
-            PEER_PASSWORD="${{ secrets.MQTT_PEER_PASSWORD }}"
-            echo "::add-mask::$PEER_PASSWORD"
-            echo "PEER_PASSWORD=$PEER_PASSWORD" >> $GITHUB_ENV
-          fi
-
           # Setup local user passwords
           IFS=',' read -ra USERS <<< "${{ steps.env.outputs.local_users }}"
           for user in "${USERS[@]}"; do
             echo "Setting up password for user: $user"
 
-            USER_UPPER=$(echo "$user" | tr '[:lower:]' '[:upper:]')
+            USER_UPPER=$(echo "$user" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
 
             # Map users to secrets
             if [ "$user" = "deviceuser" ]; then
               PASSWORD="${{ secrets.MQTT_USER_DEVICEUSER_PASSWORD }}"
             elif [ "$user" = "adminuser" ]; then
               PASSWORD="${{ secrets.MQTT_USER_ADMINUSER_PASSWORD }}"
-            elif [ "$user" = "peerbridge" ]; then
-              PASSWORD="${{ secrets.MQTT_PEER_PASSWORD }}"
+            elif [ "$user" = "external_integration_user" ]; then
+              PASSWORD="${{ secrets.MQTT_BRIDGE_PASSWORD }}"
             fi
 
             if [ -n "$PASSWORD" ]; then
@@ -149,15 +140,13 @@ jobs:
       # ============================================================
       # DUAL BROKER DEPLOYMENT (DEV)
       # ============================================================
-      - name: Generate mosquitto.conf for mqtt-1
+      - name: Generate mosquitto.conf for mqtt-1 (Our Broker)
         if: steps.env.outputs.deploy_dual_brokers == 'true'
         env:
           BRIDGE_USERNAME: ${{ steps.env.outputs.bridge_username }}
-          BRIDGE_REMOTE_ADDRESS: ${{ steps.env.outputs.bridge_remote_address }}
-          PEER_MQTT_2_ADDRESS: ${{ steps.env.outputs.peer_mqtt_2_address }}
-          PEER_USERNAME: ${{ steps.env.outputs.peer_username }}
+          EXTERNAL_BROKER_ADDRESS: ${{ steps.env.outputs.external_broker_address }}
         run: |
-          echo "Generating mosquitto.conf for mqtt-1..."
+          echo "Generating mosquitto.conf for mqtt-1 (our production simulator)..."
 
           ./scripts/generate-config.sh \
             config/mosquitto-mqtt-1.conf.template \
@@ -165,16 +154,12 @@ jobs:
 
           echo "✅ mosquitto.conf for mqtt-1 generated"
 
-      - name: Generate mosquitto.conf for mqtt-2
+      - name: Generate mosquitto.conf for mqtt-2 (External Company Simulator)
         if: steps.env.outputs.deploy_dual_brokers == 'true'
-        env:
-          BRIDGE_USERNAME: ${{ steps.env.outputs.bridge_username }}
-          BRIDGE_REMOTE_ADDRESS: ${{ steps.env.outputs.bridge_remote_address }}
-          PEER_MQTT_1_ADDRESS: ${{ steps.env.outputs.peer_mqtt_1_address }}
-          PEER_USERNAME: ${{ steps.env.outputs.peer_username }}
         run: |
-          echo "Generating mosquitto.conf for mqtt-2..."
+          echo "Generating mosquitto.conf for mqtt-2 (external company simulator)..."
 
+          # mqtt-2 has no bridge config, just standalone broker
           ./scripts/generate-config.sh \
             config/mosquitto-mqtt-2.conf.template \
             /tmp/mosquitto-2.conf
