@@ -58,18 +58,32 @@ jobs:
           source "$ENV_FILE"
           set +a
 
-          # Export for next steps
+          # Export common variables
           echo "resource_group=$RESOURCE_GROUP" >> $GITHUB_OUTPUT
           echo "storage_account=$STORAGE_ACCOUNT" >> $GITHUB_OUTPUT
-          echo "file_share_config=$FILE_SHARE_CONFIG" >> $GITHUB_OUTPUT
-          echo "container_group=$CONTAINER_GROUP" >> $GITHUB_OUTPUT
           echo "bridge_username=$BRIDGE_USERNAME" >> $GITHUB_OUTPUT
+          echo "bridge_remote_address=$BRIDGE_REMOTE_ADDRESS" >> $GITHUB_OUTPUT
           echo "local_users=$LOCAL_USERS" >> $GITHUB_OUTPUT
+          echo "deploy_dual_brokers=$DEPLOY_DUAL_BROKERS" >> $GITHUB_OUTPUT
+
+          # Export broker-specific variables
+          if [ "$DEPLOY_DUAL_BROKERS" = "true" ]; then
+            echo "file_share_config_1=$FILE_SHARE_CONFIG_1" >> $GITHUB_OUTPUT
+            echo "file_share_config_2=$FILE_SHARE_CONFIG_2" >> $GITHUB_OUTPUT
+            echo "container_group_1=$CONTAINER_GROUP_1" >> $GITHUB_OUTPUT
+            echo "container_group_2=$CONTAINER_GROUP_2" >> $GITHUB_OUTPUT
+            echo "peer_mqtt_1_address=$PEER_MQTT_1_ADDRESS" >> $GITHUB_OUTPUT
+            echo "peer_mqtt_2_address=$PEER_MQTT_2_ADDRESS" >> $GITHUB_OUTPUT
+            echo "peer_username=$PEER_USERNAME" >> $GITHUB_OUTPUT
+          else
+            echo "file_share_config=$FILE_SHARE_CONFIG" >> $GITHUB_OUTPUT
+            echo "container_group=$CONTAINER_GROUP" >> $GITHUB_OUTPUT
+          fi
 
           echo "✅ Environment: ${{ env.ENVIRONMENT }}"
           echo "📦 Resource Group: $RESOURCE_GROUP"
           echo "💾 Storage Account: $STORAGE_ACCOUNT"
-          echo "🔐 Secrets from: GitHub Secrets"
+          echo "🔧 Dual Brokers: $DEPLOY_DUAL_BROKERS"
 
       - name: Azure Login with OIDC
         uses: azure/login@v2
@@ -83,31 +97,32 @@ jobs:
         run: |
           echo "Setting up secrets from GitHub Secrets..."
 
-          # Bridge password from GitHub secrets
+          # Bridge password
           BRIDGE_PASSWORD="${{ secrets.MQTT_BRIDGE_PASSWORD }}"
-
-          # Mask secrets in logs
           echo "::add-mask::$BRIDGE_PASSWORD"
-
-          # Export for config generation
           echo "BRIDGE_PASSWORD=$BRIDGE_PASSWORD" >> $GITHUB_ENV
 
-          # Setup local user passwords from GitHub secrets
+          # Peer bridge password (for dual broker setup)
+          if [ "${{ steps.env.outputs.deploy_dual_brokers }}" = "true" ]; then
+            PEER_PASSWORD="${{ secrets.MQTT_PEER_PASSWORD }}"
+            echo "::add-mask::$PEER_PASSWORD"
+            echo "PEER_PASSWORD=$PEER_PASSWORD" >> $GITHUB_ENV
+          fi
+
+          # Setup local user passwords
           IFS=',' read -ra USERS <<< "${{ steps.env.outputs.local_users }}"
           for user in "${USERS[@]}"; do
             echo "Setting up password for user: $user"
 
-            # Get password from GitHub secret (e.g., MQTT_USER_DEVICEUSER_PASSWORD)
             USER_UPPER=$(echo "$user" | tr '[:lower:]' '[:upper:]')
-            SECRET_NAME="MQTT_USER_${USER_UPPER}_PASSWORD"
 
-            # Use indirect variable expansion
-            PASSWORD="${{ secrets.MQTT_USER_DEVICEUSER_PASSWORD }}"
-
+            # Map users to secrets
             if [ "$user" = "deviceuser" ]; then
               PASSWORD="${{ secrets.MQTT_USER_DEVICEUSER_PASSWORD }}"
             elif [ "$user" = "adminuser" ]; then
               PASSWORD="${{ secrets.MQTT_USER_ADMINUSER_PASSWORD }}"
+            elif [ "$user" = "peerbridge" ]; then
+              PASSWORD="${{ secrets.MQTT_PEER_PASSWORD }}"
             fi
 
             if [ -n "$PASSWORD" ]; then
@@ -115,35 +130,10 @@ jobs:
               echo "PASSWORD_${USER_UPPER}=$PASSWORD" >> $GITHUB_ENV
             else
               echo "⚠️  Warning: GitHub secret not found for user $user"
-              echo "Expected secret name: MQTT_USER_${USER_UPPER}_PASSWORD"
             fi
           done
 
           echo "✅ Secrets loaded from GitHub"
-
-      - name: Generate mosquitto.conf
-        env:
-          BRIDGE_USERNAME: ${{ steps.env.outputs.bridge_username }}
-        run: |
-          echo "Generating mosquitto.conf from template..."
-
-          # Run generation script
-          ./scripts/generate-config.sh \
-            config/mosquitto.conf.template \
-            /tmp/mosquitto.conf
-
-          echo "✅ mosquitto.conf generated"
-
-      - name: Generate password.txt
-        run: |
-          echo "Generating password file..."
-
-          # Run password generation script
-          ./scripts/generate-password-file.sh \
-            /tmp/password.txt \
-            "${{ steps.env.outputs.local_users }}"
-
-          echo "✅ password.txt generated"
 
       - name: Get storage account key
         id: storage
@@ -156,7 +146,154 @@ jobs:
           echo "::add-mask::$STORAGE_KEY"
           echo "storage_key=$STORAGE_KEY" >> $GITHUB_OUTPUT
 
-      - name: Upload configuration to Azure File Share
+      # ============================================================
+      # DUAL BROKER DEPLOYMENT (DEV)
+      # ============================================================
+      - name: Generate mosquitto.conf for mqtt-1
+        if: steps.env.outputs.deploy_dual_brokers == 'true'
+        env:
+          BRIDGE_USERNAME: ${{ steps.env.outputs.bridge_username }}
+          BRIDGE_REMOTE_ADDRESS: ${{ steps.env.outputs.bridge_remote_address }}
+          PEER_MQTT_2_ADDRESS: ${{ steps.env.outputs.peer_mqtt_2_address }}
+          PEER_USERNAME: ${{ steps.env.outputs.peer_username }}
+        run: |
+          echo "Generating mosquitto.conf for mqtt-1..."
+
+          ./scripts/generate-config.sh \
+            config/mosquitto-mqtt-1.conf.template \
+            /tmp/mosquitto-1.conf
+
+          echo "✅ mosquitto.conf for mqtt-1 generated"
+
+      - name: Generate mosquitto.conf for mqtt-2
+        if: steps.env.outputs.deploy_dual_brokers == 'true'
+        env:
+          BRIDGE_USERNAME: ${{ steps.env.outputs.bridge_username }}
+          BRIDGE_REMOTE_ADDRESS: ${{ steps.env.outputs.bridge_remote_address }}
+          PEER_MQTT_1_ADDRESS: ${{ steps.env.outputs.peer_mqtt_1_address }}
+          PEER_USERNAME: ${{ steps.env.outputs.peer_username }}
+        run: |
+          echo "Generating mosquitto.conf for mqtt-2..."
+
+          ./scripts/generate-config.sh \
+            config/mosquitto-mqtt-2.conf.template \
+            /tmp/mosquitto-2.conf
+
+          echo "✅ mosquitto.conf for mqtt-2 generated"
+
+      - name: Generate password.txt (shared)
+        if: steps.env.outputs.deploy_dual_brokers == 'true'
+        run: |
+          echo "Generating password file (shared by both brokers)..."
+
+          ./scripts/generate-password-file.sh \
+            /tmp/password.txt \
+            "${{ steps.env.outputs.local_users }}"
+
+          echo "✅ password.txt generated"
+
+      - name: Upload mqtt-1 configuration to Azure File Share
+        if: steps.env.outputs.deploy_dual_brokers == 'true'
+        env:
+          AZURE_STORAGE_ACCOUNT: ${{ steps.env.outputs.storage_account }}
+          AZURE_STORAGE_KEY: ${{ steps.storage.outputs.storage_key }}
+        run: |
+          echo "Uploading files to mqtt-1 file share: ${{ steps.env.outputs.file_share_config_1 }}"
+
+          # Upload mosquitto.conf for mqtt-1
+          az storage file upload \
+            --share-name ${{ steps.env.outputs.file_share_config_1 }} \
+            --source /tmp/mosquitto-1.conf \
+            --path mosquitto.conf \
+            --overwrite
+
+          # Upload shared password.txt
+          az storage file upload \
+            --share-name ${{ steps.env.outputs.file_share_config_1 }} \
+            --source /tmp/password.txt \
+            --path password.txt \
+            --overwrite
+
+          echo "✅ mqtt-1 configuration uploaded"
+
+      - name: Upload mqtt-2 configuration to Azure File Share
+        if: steps.env.outputs.deploy_dual_brokers == 'true'
+        env:
+          AZURE_STORAGE_ACCOUNT: ${{ steps.env.outputs.storage_account }}
+          AZURE_STORAGE_KEY: ${{ steps.storage.outputs.storage_key }}
+        run: |
+          echo "Uploading files to mqtt-2 file share: ${{ steps.env.outputs.file_share_config_2 }}"
+
+          # Upload mosquitto.conf for mqtt-2
+          az storage file upload \
+            --share-name ${{ steps.env.outputs.file_share_config_2 }} \
+            --source /tmp/mosquitto-2.conf \
+            --path mosquitto.conf \
+            --overwrite
+
+          # Upload shared password.txt
+          az storage file upload \
+            --share-name ${{ steps.env.outputs.file_share_config_2 }} \
+            --source /tmp/password.txt \
+            --path password.txt \
+            --overwrite
+
+          echo "✅ mqtt-2 configuration uploaded"
+
+      - name: Restart mqtt-1 container
+        if: steps.env.outputs.deploy_dual_brokers == 'true' && (inputs.restart_container != false || github.event_name == 'push')
+        continue-on-error: true
+        run: |
+          echo "Restarting mqtt-1 container: ${{ steps.env.outputs.container_group_1 }}"
+
+          az container restart \
+            --resource-group ${{ steps.env.outputs.resource_group }} \
+            --name ${{ steps.env.outputs.container_group_1 }}
+
+          echo "✅ mqtt-1 container restarted"
+
+      - name: Restart mqtt-2 container
+        if: steps.env.outputs.deploy_dual_brokers == 'true' && (inputs.restart_container != false || github.event_name == 'push')
+        continue-on-error: true
+        run: |
+          echo "Restarting mqtt-2 container: ${{ steps.env.outputs.container_group_2 }}"
+
+          az container restart \
+            --resource-group ${{ steps.env.outputs.resource_group }} \
+            --name ${{ steps.env.outputs.container_group_2 }}
+
+          echo "✅ mqtt-2 container restarted"
+
+      # ============================================================
+      # SINGLE BROKER DEPLOYMENT (PRD)
+      # ============================================================
+      - name: Generate mosquitto.conf for single broker
+        if: steps.env.outputs.deploy_dual_brokers != 'true'
+        env:
+          BRIDGE_USERNAME: ${{ steps.env.outputs.bridge_username }}
+          BRIDGE_REMOTE_ADDRESS: ${{ steps.env.outputs.bridge_remote_address }}
+        run: |
+          echo "Generating mosquitto.conf for single broker..."
+
+          ./scripts/generate-config.sh \
+            config/mosquitto-prd.conf.template \
+            /tmp/mosquitto.conf
+
+          echo "✅ mosquitto.conf generated"
+
+      - name: Generate password.txt for single broker
+        if: steps.env.outputs.deploy_dual_brokers != 'true'
+        run: |
+          echo "Generating password file..."
+
+          ./scripts/generate-password-file.sh \
+            /tmp/password.txt \
+            "${{ steps.env.outputs.local_users }}"
+
+          echo "✅ password.txt generated"
+
+      - name: Upload single broker configuration to Azure File Share
+        if: steps.env.outputs.deploy_dual_brokers != 'true'
         env:
           AZURE_STORAGE_ACCOUNT: ${{ steps.env.outputs.storage_account }}
           AZURE_STORAGE_KEY: ${{ steps.storage.outputs.storage_key }}
@@ -177,21 +314,10 @@ jobs:
             --path password.txt \
             --overwrite
 
-          echo "✅ Configuration uploaded to Azure File Share"
+          echo "✅ Configuration uploaded"
 
-      - name: Verify uploaded files
-        env:
-          AZURE_STORAGE_ACCOUNT: ${{ steps.env.outputs.storage_account }}
-          AZURE_STORAGE_KEY: ${{ steps.storage.outputs.storage_key }}
-        run: |
-          echo "Verifying files in file share..."
-
-          az storage file list \
-            --share-name ${{ steps.env.outputs.file_share_config }} \
-            --output table
-
-      - name: Restart MQTT container
-        if: inputs.restart_container != false && github.event_name == 'push'
+      - name: Restart single broker container
+        if: steps.env.outputs.deploy_dual_brokers != 'true' && (inputs.restart_container != false || github.event_name == 'push')
         continue-on-error: true
         run: |
           echo "Restarting container: ${{ steps.env.outputs.container_group }}"
@@ -202,8 +328,37 @@ jobs:
 
           echo "✅ Container restarted"
 
-      - name: Check container status
-        if: inputs.restart_container != false && github.event_name == 'push'
+      # ============================================================
+      # STATUS CHECK
+      # ============================================================
+      - name: Check container status (dual brokers)
+        if: steps.env.outputs.deploy_dual_brokers == 'true' && (inputs.restart_container != false || github.event_name == 'push')
+        run: |
+          sleep 15
+
+          echo "Checking mqtt-1 status..."
+          STATUS_1=$(az container show \
+            --resource-group ${{ steps.env.outputs.resource_group }} \
+            --name ${{ steps.env.outputs.container_group_1 }} \
+            --query instanceView.state -o tsv)
+
+          echo "Checking mqtt-2 status..."
+          STATUS_2=$(az container show \
+            --resource-group ${{ steps.env.outputs.resource_group }} \
+            --name ${{ steps.env.outputs.container_group_2 }} \
+            --query instanceView.state -o tsv)
+
+          echo "mqtt-1 status: $STATUS_1"
+          echo "mqtt-2 status: $STATUS_2"
+
+          if [ "$STATUS_1" = "Running" ] && [ "$STATUS_2" = "Running" ]; then
+            echo "✅ Both containers are running"
+          else
+            echo "⚠️  One or more containers not running"
+          fi
+
+      - name: Check container status (single broker)
+        if: steps.env.outputs.deploy_dual_brokers != 'true' && (inputs.restart_container != false || github.event_name == 'push')
         run: |
           sleep 10
 
@@ -226,9 +381,22 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Environment:** ${{ env.ENVIRONMENT }}" >> $GITHUB_STEP_SUMMARY
           echo "**Storage Account:** ${{ steps.env.outputs.storage_account }}" >> $GITHUB_STEP_SUMMARY
-          echo "**File Share:** ${{ steps.env.outputs.file_share_config }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Container Group:** ${{ steps.env.outputs.container_group }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Files deployed:" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ mosquitto.conf" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ password.txt" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ steps.env.outputs.deploy_dual_brokers }}" = "true" ]; then
+            echo "**Deployment Type:** Dual Broker (Redundancy)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### MQTT Broker 1" >> $GITHUB_STEP_SUMMARY
+            echo "- File Share: ${{ steps.env.outputs.file_share_config_1 }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Container: ${{ steps.env.outputs.container_group_1 }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Config: ✅ mosquitto.conf, ✅ password.txt" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### MQTT Broker 2" >> $GITHUB_STEP_SUMMARY
+            echo "- File Share: ${{ steps.env.outputs.file_share_config_2 }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Container: ${{ steps.env.outputs.container_group_2 }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Config: ✅ mosquitto.conf, ✅ password.txt" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Deployment Type:** Single Broker" >> $GITHUB_STEP_SUMMARY
+            echo "- File Share: ${{ steps.env.outputs.file_share_config }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Container: ${{ steps.env.outputs.container_group }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Config: ✅ mosquitto.conf, ✅ password.txt" >> $GITHUB_STEP_SUMMARY
+          fi
