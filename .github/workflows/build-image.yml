@@ -1,0 +1,115 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'docker/**'
+      - '.github/workflows/build-image.yml'
+
+  pull_request:
+    branches:
+      - main
+      - master
+    paths:
+      - 'docker/**'
+      - '.github/workflows/build-image.yml'
+
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Docker image tag (leave empty for auto-generated)'
+        required: false
+        default: ''
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  ACR_NAME: irisacr
+  IMAGE_NAME: mosquitto
+
+jobs:
+  build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: tags
+        run: |
+          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            TAG="${{ github.event.inputs.image_tag }}"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            TAG="pr-${{ github.event.pull_request.number }}"
+          else
+            TAG="$(date +%Y%m%d)-${GITHUB_SHA::8}"
+          fi
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "latest=latest" >> $GITHUB_OUTPUT
+          echo "📦 Image tag: $TAG"
+
+      - name: Azure Login with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to Azure Container Registry
+        run: |
+          az acr login --name ${{ env.ACR_NAME }}
+
+      - name: Build Docker image
+        working-directory: docker
+        run: |
+          docker build \
+            -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ steps.tags.outputs.tag }} \
+            -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ steps.tags.outputs.latest }} \
+            --label "git.commit=${{ github.sha }}" \
+            --label "git.branch=${{ github.ref_name }}" \
+            --label "build.date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            .
+
+          echo "✅ Image built successfully"
+
+      - name: Scan image for vulnerabilities
+        continue-on-error: true
+        run: |
+          # Install Trivy
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update && sudo apt-get install -y trivy
+
+          # Scan image
+          trivy image \
+            --severity HIGH,CRITICAL \
+            --format table \
+            ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ steps.tags.outputs.tag }}
+
+      - name: Push image to ACR
+        if: github.event_name != 'pull_request'
+        run: |
+          docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ steps.tags.outputs.tag }}
+          docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ steps.tags.outputs.latest }}
+
+          echo "✅ Image pushed to ACR"
+          echo "📍 ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ steps.tags.outputs.tag }}"
+          echo "📍 ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ steps.tags.outputs.latest }}"
+
+      - name: Summary
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "## 🐳 Docker Image Built and Pushed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Registry:** ${{ env.ACR_NAME }}.azurecr.io" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** ${{ env.IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Tags:** ${{ steps.tags.outputs.tag }}, ${{ steps.tags.outputs.latest }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY

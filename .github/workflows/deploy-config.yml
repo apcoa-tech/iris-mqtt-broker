@@ -1,0 +1,234 @@
+name: Deploy MQTT Configuration
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'config/**'
+      - 'scripts/**'
+      - '.github/workflows/deploy-config.yml'
+
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        type: choice
+        options:
+          - dev
+          - uat
+          - prd
+        default: 'dev'
+      restart_container:
+        description: 'Restart container after deployment'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy Configuration to ${{ inputs.environment || 'dev' }}
+    runs-on: ubuntu-latest
+
+    env:
+      ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Load environment configuration
+        id: env
+        run: |
+          ENV_FILE="config/env.${{ env.ENVIRONMENT }}"
+
+          if [ ! -f "$ENV_FILE" ]; then
+            echo "❌ Environment file not found: $ENV_FILE"
+            exit 1
+          fi
+
+          # Load environment variables
+          set -a
+          source "$ENV_FILE"
+          set +a
+
+          # Export for next steps
+          echo "resource_group=$RESOURCE_GROUP" >> $GITHUB_OUTPUT
+          echo "storage_account=$STORAGE_ACCOUNT" >> $GITHUB_OUTPUT
+          echo "file_share_config=$FILE_SHARE_CONFIG" >> $GITHUB_OUTPUT
+          echo "container_group=$CONTAINER_GROUP" >> $GITHUB_OUTPUT
+          echo "bridge_username=$BRIDGE_USERNAME" >> $GITHUB_OUTPUT
+          echo "local_users=$LOCAL_USERS" >> $GITHUB_OUTPUT
+
+          echo "✅ Environment: ${{ env.ENVIRONMENT }}"
+          echo "📦 Resource Group: $RESOURCE_GROUP"
+          echo "💾 Storage Account: $STORAGE_ACCOUNT"
+          echo "🔐 Secrets from: GitHub Secrets"
+
+      - name: Azure Login with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup secrets from GitHub Secrets
+        id: secrets
+        run: |
+          echo "Setting up secrets from GitHub Secrets..."
+
+          # Bridge password from GitHub secrets
+          BRIDGE_PASSWORD="${{ secrets.MQTT_BRIDGE_PASSWORD }}"
+
+          # Mask secrets in logs
+          echo "::add-mask::$BRIDGE_PASSWORD"
+
+          # Export for config generation
+          echo "BRIDGE_PASSWORD=$BRIDGE_PASSWORD" >> $GITHUB_ENV
+
+          # Setup local user passwords from GitHub secrets
+          IFS=',' read -ra USERS <<< "${{ steps.env.outputs.local_users }}"
+          for user in "${USERS[@]}"; do
+            echo "Setting up password for user: $user"
+
+            # Get password from GitHub secret (e.g., MQTT_USER_DEVICEUSER_PASSWORD)
+            USER_UPPER=$(echo "$user" | tr '[:lower:]' '[:upper:]')
+            SECRET_NAME="MQTT_USER_${USER_UPPER}_PASSWORD"
+
+            # Use indirect variable expansion
+            PASSWORD="${{ secrets.MQTT_USER_DEVICEUSER_PASSWORD }}"
+
+            if [ "$user" = "deviceuser" ]; then
+              PASSWORD="${{ secrets.MQTT_USER_DEVICEUSER_PASSWORD }}"
+            elif [ "$user" = "adminuser" ]; then
+              PASSWORD="${{ secrets.MQTT_USER_ADMINUSER_PASSWORD }}"
+            fi
+
+            if [ -n "$PASSWORD" ]; then
+              echo "::add-mask::$PASSWORD"
+              echo "PASSWORD_${USER_UPPER}=$PASSWORD" >> $GITHUB_ENV
+            else
+              echo "⚠️  Warning: GitHub secret not found for user $user"
+              echo "Expected secret name: MQTT_USER_${USER_UPPER}_PASSWORD"
+            fi
+          done
+
+          echo "✅ Secrets loaded from GitHub"
+
+      - name: Generate mosquitto.conf
+        env:
+          BRIDGE_USERNAME: ${{ steps.env.outputs.bridge_username }}
+        run: |
+          echo "Generating mosquitto.conf from template..."
+
+          # Run generation script
+          ./scripts/generate-config.sh \
+            config/mosquitto.conf.template \
+            /tmp/mosquitto.conf
+
+          echo "✅ mosquitto.conf generated"
+
+      - name: Generate password.txt
+        run: |
+          echo "Generating password file..."
+
+          # Run password generation script
+          ./scripts/generate-password-file.sh \
+            /tmp/password.txt \
+            "${{ steps.env.outputs.local_users }}"
+
+          echo "✅ password.txt generated"
+
+      - name: Get storage account key
+        id: storage
+        run: |
+          STORAGE_KEY=$(az storage account keys list \
+            --resource-group ${{ steps.env.outputs.resource_group }} \
+            --account-name ${{ steps.env.outputs.storage_account }} \
+            --query '[0].value' -o tsv)
+
+          echo "::add-mask::$STORAGE_KEY"
+          echo "storage_key=$STORAGE_KEY" >> $GITHUB_OUTPUT
+
+      - name: Upload configuration to Azure File Share
+        env:
+          AZURE_STORAGE_ACCOUNT: ${{ steps.env.outputs.storage_account }}
+          AZURE_STORAGE_KEY: ${{ steps.storage.outputs.storage_key }}
+        run: |
+          echo "Uploading files to file share: ${{ steps.env.outputs.file_share_config }}"
+
+          # Upload mosquitto.conf
+          az storage file upload \
+            --share-name ${{ steps.env.outputs.file_share_config }} \
+            --source /tmp/mosquitto.conf \
+            --path mosquitto.conf \
+            --overwrite
+
+          # Upload password.txt
+          az storage file upload \
+            --share-name ${{ steps.env.outputs.file_share_config }} \
+            --source /tmp/password.txt \
+            --path password.txt \
+            --overwrite
+
+          echo "✅ Configuration uploaded to Azure File Share"
+
+      - name: Verify uploaded files
+        env:
+          AZURE_STORAGE_ACCOUNT: ${{ steps.env.outputs.storage_account }}
+          AZURE_STORAGE_KEY: ${{ steps.storage.outputs.storage_key }}
+        run: |
+          echo "Verifying files in file share..."
+
+          az storage file list \
+            --share-name ${{ steps.env.outputs.file_share_config }} \
+            --output table
+
+      - name: Restart MQTT container
+        if: inputs.restart_container != false && github.event_name == 'push'
+        continue-on-error: true
+        run: |
+          echo "Restarting container: ${{ steps.env.outputs.container_group }}"
+
+          az container restart \
+            --resource-group ${{ steps.env.outputs.resource_group }} \
+            --name ${{ steps.env.outputs.container_group }}
+
+          echo "✅ Container restarted"
+
+      - name: Check container status
+        if: inputs.restart_container != false && github.event_name == 'push'
+        run: |
+          sleep 10
+
+          STATUS=$(az container show \
+            --resource-group ${{ steps.env.outputs.resource_group }} \
+            --name ${{ steps.env.outputs.container_group }} \
+            --query instanceView.state -o tsv)
+
+          echo "Container status: $STATUS"
+
+          if [ "$STATUS" = "Running" ]; then
+            echo "✅ Container is running"
+          else
+            echo "⚠️  Container is not running: $STATUS"
+          fi
+
+      - name: Summary
+        run: |
+          echo "## 📝 MQTT Configuration Deployed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ env.ENVIRONMENT }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Storage Account:** ${{ steps.env.outputs.storage_account }}" >> $GITHUB_STEP_SUMMARY
+          echo "**File Share:** ${{ steps.env.outputs.file_share_config }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Container Group:** ${{ steps.env.outputs.container_group }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Files deployed:" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ mosquitto.conf" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ password.txt" >> $GITHUB_STEP_SUMMARY
