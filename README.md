@@ -5,7 +5,7 @@ Custom Eclipse Mosquitto MQTT broker for the IRIS project with bridge configurat
 ## Overview
 
 This repository contains:
-- **Custom Docker image** based on Eclipse Mosquitto 2.0.18
+- **Custom Docker image** based on Eclipse Mosquitto 2.0.22 (Alpine 3.22.2)
 - **Configuration templates** without sensitive data
 - **Deployment scripts** for generating config with secrets from Azure Key Vault
 - **GitHub Actions workflows** for automated building and deployment
