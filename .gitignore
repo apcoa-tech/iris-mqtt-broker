@@ -1,0 +1,42 @@
+# Sensitive files - NEVER commit these
+*.key
+*.pem
+password.txt
+mosquitto.conf
+
+# Keep only templates
+!*.template
+
+# Environment files with secrets
+.env
+.env.*
+!config/env.template
+!config/env.dev
+!config/env.uat
+!config/env.prd
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+/tmp/
+*.tmp
+*.swp
+*~
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.dockerignore
+
+# Build artifacts
+dist/
+build/
