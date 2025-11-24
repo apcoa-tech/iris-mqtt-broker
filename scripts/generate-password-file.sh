@@ -30,7 +30,7 @@ for username in "${USER_ARRAY[@]}"; do
   # Use Docker to run mosquitto_passwd (ensures we have the tool)
   docker run --rm \
     -v "$(dirname "$OUTPUT_FILE"):/tmp" \
-    eclipse-mosquitto:2.0.18 \
+    eclipse-mosquitto:2.0.22 \
     mosquitto_passwd -b "/tmp/$(basename "$OUTPUT_FILE")" "$username" "$password"
 done
 

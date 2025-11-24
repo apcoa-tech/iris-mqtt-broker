@@ -1,11 +1,11 @@
 # Custom Mosquitto MQTT Broker for IRIS
-# Based on Eclipse Mosquitto 2.0.18
+# Based on Eclipse Mosquitto 2.0.22 (Alpine 3.22.2)
 
-FROM eclipse-mosquitto:2.0.18
+FROM eclipse-mosquitto:2.0.22
 
 LABEL maintainer="APCOA IRIS Team"
 LABEL description="Custom Mosquitto MQTT broker with bridge configuration for IRIS project"
-LABEL version="1.0.0"
+LABEL version="1.0.1"
 
 # Copy static bridge CA certificate (not sensitive, rarely changes)
 # This is the CA cert for verifying the remote production broker
