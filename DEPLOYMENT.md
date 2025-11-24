@@ -6,26 +6,35 @@ This guide covers deploying MQTT broker configurations to Azure Container Instan
 
 ## Architecture
 
-### Development Environment (Dual Broker)
+### Development Environment (Dual Broker - Simulates Production)
 ```
-Internet
+IoT Devices
     │
-    ├─── mqtt-1 (iris-dev-mqtt-1.westeurope.azurecontainer.io:8883)
-    │     ├─ Bridge to: Production (3.121.198.76:8883)
-    │     └─ Bridge to: mqtt-2 (peer)
+    ├──> mqtt-1 (iris-dev-mqtt-1.westeurope.azurecontainer.io:8883)
+    │    OUR MQTT Broker (simulates production)
+    │    │
+    │    └──bridge──> mqtt-2 (iris-dev-mqtt-2.westeurope.azurecontainer.io:8883)
+    │                 EXTERNAL COMPANY Simulator (standalone)
     │
-    └─── mqtt-2 (iris-dev-mqtt-2.westeurope.azurecontainer.io:8883)
-          ├─ Bridge to: Production (3.121.198.76:8883)
-          └─ Bridge to: mqtt-1 (peer)
+    │    Purpose: Test bridge integration without access to external company's dev env
 ```
 
 ### Production Environment (Single Broker)
 ```
-Internet
+IoT Devices
     │
-    └─── mqtt (iris-prd-mqtt.westeurope.azurecontainer.io:8883)
-          └─ Bridge to: External Company Broker
+    └──> mqtt (iris-prd-mqtt.westeurope.azurecontainer.io:8883)
+         OUR MQTT Broker
+         │
+         └──bridge──> External Company's MQTT Broker
+                      (Not owned by us)
 ```
+
+**Key Points:**
+- **DEV**: mqtt-1 = our broker, mqtt-2 = fake external company (for testing)
+- **PRD**: Single broker that bridges to the real external company
+- mqtt-2 in dev is standalone - it does NOT bridge back to mqtt-1
+- This simulates the real production scenario where external company accepts our connection
 
 ## Prerequisites
 
@@ -117,26 +126,33 @@ gh secret set AZURE_SUBSCRIPTION_ID --repo apcoa-tech/iris-mqtt-broker
 
 # MQTT Passwords - Generate strong passwords
 gh secret set MQTT_BRIDGE_PASSWORD --repo apcoa-tech/iris-mqtt-broker
-# ^ Password for connecting to production broker (3.121.198.76:8883)
-
-gh secret set MQTT_PEER_PASSWORD --repo apcoa-tech/iris-mqtt-broker
-# ^ Password for mqtt-1 <-> mqtt-2 peer bridge communication
+# ^ Password for mqtt-1 to connect to mqtt-2 (dev) or external company (prd)
+# ^ Also used by mqtt-2 for "external_integration_user" account
 
 gh secret set MQTT_USER_DEVICEUSER_PASSWORD --repo apcoa-tech/iris-mqtt-broker
-# ^ Password for IoT devices connecting to broker
+# ^ Password for IoT devices connecting to mqtt-1
 
 gh secret set MQTT_USER_ADMINUSER_PASSWORD --repo apcoa-tech/iris-mqtt-broker
-# ^ Password for admin/monitoring tools
+# ^ Password for admin/monitoring tools connecting to mqtt-1
 ```
 
 #### Generating Strong Passwords
 
 ```bash
 # Generate random passwords
-openssl rand -base64 32  # For MQTT_BRIDGE_PASSWORD
-openssl rand -base64 32  # For MQTT_PEER_PASSWORD
-openssl rand -base64 32  # For MQTT_USER_DEVICEUSER_PASSWORD
-openssl rand -base64 32  # For MQTT_USER_ADMINUSER_PASSWORD
+BRIDGE_PWD=$(openssl rand -base64 32)
+DEVICE_PWD=$(openssl rand -base64 32)
+ADMIN_PWD=$(openssl rand -base64 32)
+
+# Add to GitHub
+gh secret set MQTT_BRIDGE_PASSWORD --body "$BRIDGE_PWD" --repo apcoa-tech/iris-mqtt-broker
+gh secret set MQTT_USER_DEVICEUSER_PASSWORD --body "$DEVICE_PWD" --repo apcoa-tech/iris-mqtt-broker
+gh secret set MQTT_USER_ADMINUSER_PASSWORD --body "$ADMIN_PWD" --repo apcoa-tech/iris-mqtt-broker
+
+# Save these passwords securely - you'll need them for testing
+echo "Bridge Password (mqtt-1 -> mqtt-2): $BRIDGE_PWD"
+echo "Device User Password: $DEVICE_PWD"
+echo "Admin User Password: $ADMIN_PWD"
 ```
 
 ## Deployment
@@ -203,24 +219,46 @@ brew install mosquitto  # macOS
 # OR
 apt-get install mosquitto-clients  # Ubuntu
 
-# Test mqtt-1
+# Test mqtt-1 (our broker)
 mosquitto_pub -h iris-dev-mqtt-1.westeurope.azurecontainer.io -p 8883 \
-  --cafile ca.crt --cert client.crt --key client.key \
-  -u deviceuser -P <password> \
-  -t "test/topic" -m "Hello from mqtt-1"
+  --cafile ca.crt \
+  -u deviceuser -P <MQTT_USER_DEVICEUSER_PASSWORD> \
+  -t "Advantech/74FE4857C133/data" -m '{"temp":25.5}'
 
-# Test mqtt-2
-mosquitto_pub -h iris-dev-mqtt-2.westeurope.azurecontainer.io -p 8883 \
-  --cafile ca.crt --cert client.crt --key client.key \
-  -u deviceuser -P <password> \
-  -t "test/topic" -m "Hello from mqtt-2"
-
-# Subscribe to see if messages are bridged
+# Subscribe on mqtt-1 to see local messages
 mosquitto_sub -h iris-dev-mqtt-1.westeurope.azurecontainer.io -p 8883 \
-  --cafile ca.crt --cert client.crt --key client.key \
-  -u deviceuser -P <password> \
-  -t "test/#" -v
+  --cafile ca.crt \
+  -u deviceuser -P <MQTT_USER_DEVICEUSER_PASSWORD> \
+  -t "Advantech/#" -v
+
+# Subscribe on mqtt-2 to verify bridge is working
+mosquitto_sub -h iris-dev-mqtt-2.westeurope.azurecontainer.io -p 8883 \
+  --cafile ca.crt \
+  -u external_integration_user -P <MQTT_BRIDGE_PASSWORD> \
+  -t "Advantech/#" -v
+
+# Expected: Messages published to mqtt-1 should appear on mqtt-2 (via bridge)
 ```
+
+**Testing the Bridge:**
+
+1. Start subscriber on mqtt-2 (external company simulator):
+```bash
+mosquitto_sub -h iris-dev-mqtt-2.westeurope.azurecontainer.io -p 8883 \
+  --cafile ca.crt \
+  -u external_integration_user -P <MQTT_BRIDGE_PASSWORD> \
+  -t "Advantech/#" -v
+```
+
+2. In another terminal, publish to mqtt-1 (our broker):
+```bash
+mosquitto_pub -h iris-dev-mqtt-1.westeurope.azurecontainer.io -p 8883 \
+  --cafile ca.crt \
+  -u deviceuser -P <MQTT_USER_DEVICEUSER_PASSWORD> \
+  -t "Advantech/74FE4857C133/test" -m "Bridge test message"
+```
+
+3. You should see the message appear on mqtt-2 subscriber (proving bridge works!)
 
 ## Troubleshooting
 
@@ -249,7 +287,7 @@ Common issues:
 - Network connectivity to remote broker
 - Remote broker not allowing connection
 
-### Peer Bridge Not Working (Dev only)
+### Bridge Not Working (Dev)
 
 Verify both containers are running:
 ```bash
@@ -257,16 +295,23 @@ az container show -g iot-dev -n iris-dev-mqtt-1 --query instanceView.state
 az container show -g iot-dev -n iris-dev-mqtt-2 --query instanceView.state
 ```
 
-Check peer bridge configuration:
+Check bridge status in mqtt-1 logs:
 ```bash
-# Check if peer user exists in password file
+az container logs -g iot-dev -n iris-dev-mqtt-1 | grep -i "external-company-bridge"
+# Look for: "Bridge external-company-bridge: connected"
+```
+
+Check if external_integration_user exists on mqtt-2:
+```bash
+# Download password file from mqtt-2
 az storage file download \
   --account-name irisstdev001 \
-  --share-name iris-dev-mqtt-1-config \
+  --share-name iris-dev-mqtt-2-config \
   --path password.txt \
-  --dest /tmp/password-mqtt-1.txt
+  --dest /tmp/password-mqtt-2.txt
 
-cat /tmp/password-mqtt-1.txt | grep peerbridge
+cat /tmp/password-mqtt-2.txt | grep external_integration_user
+# Should show hashed password for this user
 ```
 
 ### Configuration Not Updating
