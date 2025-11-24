@@ -29,7 +29,7 @@ permissions:
   contents: read
 
 env:
-  ACR_NAME: irisacr
+  ACR_NAME: irisacrdev001
   IMAGE_NAME: mosquitto
 
 jobs:
