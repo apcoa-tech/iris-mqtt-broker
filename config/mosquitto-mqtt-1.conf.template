@@ -67,10 +67,9 @@ bridge_protocol_version mqttv311
 
 # Bridge topics - Advantech device data
 # Format: topic pattern direction QoS
-# out: mqtt-1 -> external company (we send data to them)
-# in: external company -> mqtt-1 (we receive data from them)
-topic Advantech/74FE4857C133/# out 0
-topic Advantech/74FE4857C1B3/# out 0
+# both: bidirectional (mqtt-1 <-> external company)
+topic Advantech/74FE4857C133/# both 0
+topic Advantech/74FE4857C1B3/# both 0
 
 # Bridge startup configuration
 start_type automatic
