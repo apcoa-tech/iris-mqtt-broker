@@ -3,8 +3,7 @@ name: Deploy MQTT Configuration
 on:
   push:
     branches:
-      - main
-      - master
+      - '**'  # Run on all branches
     paths:
       - 'config/**'
       - 'scripts/**'
