@@ -9,6 +9,13 @@ USERS="${2:-deviceuser,adminuser}"
 
 echo "Generating password file for users: $USERS"
 
+# Check if mosquitto_passwd is available
+if ! command -v mosquitto_passwd &> /dev/null; then
+  echo "❌ Error: mosquitto_passwd not found"
+  echo "Please install mosquitto tools first (e.g., apt-get install mosquitto)"
+  exit 1
+fi
+
 # Remove existing password file
 rm -f "$OUTPUT_FILE"
 
@@ -30,16 +37,10 @@ for username in "${USER_ARRAY[@]}"; do
 
   # Use -c flag for first user to create the file
   if [ "$first_user" = true ]; then
-    docker run --rm \
-      -v "$(dirname "$OUTPUT_FILE"):/tmp" \
-      eclipse-mosquitto:2.0.22 \
-      mosquitto_passwd -c -b "/tmp/$(basename "$OUTPUT_FILE")" "$username" "$password"
+    mosquitto_passwd -c -b "$OUTPUT_FILE" "$username" "$password"
     first_user=false
   else
-    docker run --rm \
-      -v "$(dirname "$OUTPUT_FILE"):/tmp" \
-      eclipse-mosquitto:2.0.22 \
-      mosquitto_passwd -b "/tmp/$(basename "$OUTPUT_FILE")" "$username" "$password"
+    mosquitto_passwd -b "$OUTPUT_FILE" "$username" "$password"
   fi
 done
 
