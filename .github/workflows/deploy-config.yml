@@ -138,6 +138,101 @@ jobs:
           echo "storage_key=$STORAGE_KEY" >> $GITHUB_OUTPUT
 
       # ============================================================
+      # CERTIFICATE UPLOAD (First-time setup or cert renewal)
+      # ============================================================
+      - name: Check if certificates exist
+        id: cert_check
+        env:
+          AZURE_STORAGE_ACCOUNT: ${{ steps.env.outputs.storage_account }}
+          AZURE_STORAGE_KEY: ${{ steps.storage.outputs.storage_key }}
+        run: |
+          # Check if certificates already exist
+          CERT_EXISTS=false
+
+          if [ "${{ steps.env.outputs.deploy_dual_brokers }}" = "true" ]; then
+            SHARE_NAME="${{ steps.env.outputs.file_share_config_1 }}"
+            # For dual broker, use mqtt-certs share
+            SHARE_NAME="iris-${{ env.ENVIRONMENT }}-mqtt-certs"
+          else
+            SHARE_NAME="${{ steps.env.outputs.file_share_config }}"
+            SHARE_NAME="iris-${{ env.ENVIRONMENT }}-mqtt-certs"
+          fi
+
+          # Check if server.crt exists
+          if az storage file exists \
+            --share-name "$SHARE_NAME" \
+            --path server.crt \
+            --query exists -o tsv 2>/dev/null | grep -q true; then
+            CERT_EXISTS=true
+          fi
+
+          echo "cert_exists=$CERT_EXISTS" >> $GITHUB_OUTPUT
+          echo "📋 Certificates exist: $CERT_EXISTS"
+
+      - name: Generate self-signed certificates (Dev/UAT - if missing)
+        if: steps.cert_check.outputs.cert_exists == 'false' && env.ENVIRONMENT != 'prd'
+        run: |
+          echo "🔐 Generating self-signed certificates for ${{ env.ENVIRONMENT }} environment..."
+          mkdir -p /tmp/certs
+
+          # Generate CA certificate
+          openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+            -keyout /tmp/certs/ca.key \
+            -out /tmp/certs/ca.crt \
+            -subj "/CN=IRIS ${{ env.ENVIRONMENT }} CA/O=APCOA/C=DE"
+
+          # Generate server certificate
+          openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+            -keyout /tmp/certs/server.key \
+            -out /tmp/certs/server.crt \
+            -subj "/CN=*.westeurope.azurecontainer.io/O=APCOA/C=DE"
+
+          # Generate production CA (self-signed for dev/uat testing)
+          openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+            -keyout /tmp/certs/production_ca.key \
+            -out /tmp/certs/production_ca.crt \
+            -subj "/CN=Production CA Simulator/O=APCOA/C=DE"
+
+          echo "✅ Self-signed certificates generated"
+
+      - name: Upload certificates (if generated)
+        if: steps.cert_check.outputs.cert_exists == 'false'
+        env:
+          AZURE_STORAGE_ACCOUNT: ${{ steps.env.outputs.storage_account }}
+          AZURE_STORAGE_KEY: ${{ steps.storage.outputs.storage_key }}
+        run: |
+          if [ "${{ env.ENVIRONMENT }}" = "prd" ]; then
+            echo "❌ Production environment requires proper CA-signed certificates"
+            echo "Please upload certificates manually to iris-prd-mqtt-certs file share"
+            exit 1
+          fi
+
+          CERTS_SHARE="iris-${{ env.ENVIRONMENT }}-mqtt-certs"
+          BRIDGE_CERTS_SHARE="iris-${{ env.ENVIRONMENT }}-mqtt-bridge-certs"
+
+          echo "📤 Uploading TLS certificates to $CERTS_SHARE..."
+
+          # Upload server certificates
+          az storage file upload --share-name "$CERTS_SHARE" \
+            --source /tmp/certs/server.crt --path server.crt --overwrite
+
+          az storage file upload --share-name "$CERTS_SHARE" \
+            --source /tmp/certs/server.key --path server.key --overwrite
+
+          az storage file upload --share-name "$CERTS_SHARE" \
+            --source /tmp/certs/ca.crt --path ca.crt --overwrite
+
+          echo "✅ TLS certificates uploaded to $CERTS_SHARE"
+
+          # Upload bridge CA certificate
+          echo "📤 Uploading bridge CA to $BRIDGE_CERTS_SHARE..."
+
+          az storage file upload --share-name "$BRIDGE_CERTS_SHARE" \
+            --source /tmp/certs/production_ca.crt --path production_ca.crt --overwrite
+
+          echo "✅ Bridge CA uploaded to $BRIDGE_CERTS_SHARE"
+
+      # ============================================================
       # DUAL BROKER DEPLOYMENT (DEV)
       # ============================================================
       - name: Generate mosquitto.conf for mqtt-1 (Our Broker)
@@ -366,22 +461,39 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Environment:** ${{ env.ENVIRONMENT }}" >> $GITHUB_STEP_SUMMARY
           echo "**Storage Account:** ${{ steps.env.outputs.storage_account }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Certificate status
+          if [ "${{ steps.cert_check.outputs.cert_exists }}" = "false" ]; then
+            echo "### 🔐 Certificates" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Generated and uploaded self-signed certificates" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ server.crt, server.key, ca.crt" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ production_ca.crt (bridge)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### 🔐 Certificates" >> $GITHUB_STEP_SUMMARY
+            echo "- ℹ️  Existing certificates retained (not replaced)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
 
           if [ "${{ steps.env.outputs.deploy_dual_brokers }}" = "true" ]; then
-            echo "**Deployment Type:** Dual Broker (Redundancy)" >> $GITHUB_STEP_SUMMARY
+            echo "**Deployment Type:** Dual Broker (Simulation)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### MQTT Broker 1" >> $GITHUB_STEP_SUMMARY
+            echo "### MQTT Broker 1 (Our Broker Simulator)" >> $GITHUB_STEP_SUMMARY
             echo "- File Share: ${{ steps.env.outputs.file_share_config_1 }}" >> $GITHUB_STEP_SUMMARY
             echo "- Container: ${{ steps.env.outputs.container_group_1 }}" >> $GITHUB_STEP_SUMMARY
             echo "- Config: ✅ mosquitto.conf, ✅ password.txt" >> $GITHUB_STEP_SUMMARY
+            echo "- Bridge: → mqtt-2 (simulates external company)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### MQTT Broker 2" >> $GITHUB_STEP_SUMMARY
+            echo "### MQTT Broker 2 (External Company Simulator)" >> $GITHUB_STEP_SUMMARY
             echo "- File Share: ${{ steps.env.outputs.file_share_config_2 }}" >> $GITHUB_STEP_SUMMARY
             echo "- Container: ${{ steps.env.outputs.container_group_2 }}" >> $GITHUB_STEP_SUMMARY
             echo "- Config: ✅ mosquitto.conf, ✅ password.txt" >> $GITHUB_STEP_SUMMARY
+            echo "- Mode: Standalone (accepts bridge from mqtt-1)" >> $GITHUB_STEP_SUMMARY
           else
-            echo "**Deployment Type:** Single Broker" >> $GITHUB_STEP_SUMMARY
+            echo "**Deployment Type:** Single Broker (Production)" >> $GITHUB_STEP_SUMMARY
             echo "- File Share: ${{ steps.env.outputs.file_share_config }}" >> $GITHUB_STEP_SUMMARY
             echo "- Container: ${{ steps.env.outputs.container_group }}" >> $GITHUB_STEP_SUMMARY
             echo "- Config: ✅ mosquitto.conf, ✅ password.txt" >> $GITHUB_STEP_SUMMARY
+            echo "- Bridge: → External company broker" >> $GITHUB_STEP_SUMMARY
           fi
