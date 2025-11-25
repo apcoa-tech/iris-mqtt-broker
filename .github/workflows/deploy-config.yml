@@ -169,7 +169,6 @@ jobs:
           echo "📋 Certificates exist: $CERT_EXISTS"
 
       - name: Use production certificates (committed to repo)
-        if: steps.cert_check.outputs.cert_exists == 'false'
         run: |
           echo "🔐 Using production certificates from prod_broker directory..."
           mkdir -p /tmp/certs
@@ -182,15 +181,25 @@ jobs:
           # CA cert: CN=IRIS Production CA (self-signed CA)
           # Server cert: CN=prod-mosquitto (signed by the CA)
 
-          # Check if certificates exist in repo root (copied from prod_broker)
-          if [ -f "ca.crt" ] && [ -f "server.crt" ] && [ -f "server.key" ]; then
+          # Check if certificates exist in repo root (ca.crt and server.crt are committed)
+          if [ -f "ca.crt" ] && [ -f "server.crt" ]; then
             cp ca.crt /tmp/certs/ca.crt
             cp server.crt /tmp/certs/server.crt
-            cp server.key /tmp/certs/server.key
-            echo "✅ Production certificates copied from repo"
+            echo "✅ Production certificates (ca.crt, server.crt) copied from repo"
           else
             echo "❌ Production certificates not found in repo!"
-            echo "Expected files: ca.crt, server.crt, server.key"
+            echo "Expected files: ca.crt, server.crt"
+            exit 1
+          fi
+
+          # Private key from GitHub Secrets (never committed to repo)
+          if [ -n "${{ secrets.MQTT_SERVER_KEY }}" ]; then
+            echo "${{ secrets.MQTT_SERVER_KEY }}" > /tmp/certs/server.key
+            chmod 600 /tmp/certs/server.key
+            echo "✅ Server private key loaded from GitHub Secrets"
+          else
+            echo "❌ MQTT_SERVER_KEY secret not found!"
+            echo "Please add the server.key content to GitHub Secrets as MQTT_SERVER_KEY"
             exit 1
           fi
 
@@ -205,8 +214,7 @@ jobs:
 
           echo "✅ All certificates prepared from production files"
 
-      - name: Upload certificates (if generated)
-        if: steps.cert_check.outputs.cert_exists == 'false'
+      - name: Upload certificates (force overwrite)
         env:
           AZURE_STORAGE_ACCOUNT: ${{ steps.env.outputs.storage_account }}
           AZURE_STORAGE_KEY: ${{ steps.storage.outputs.storage_key }}
