@@ -214,13 +214,13 @@ jobs:
 
           # Upload server certificates
           az storage file upload --share-name "$CERTS_SHARE" \
-            --source /tmp/certs/server.crt --path server.crt --overwrite
+            --source /tmp/certs/server.crt --path server.crt
 
           az storage file upload --share-name "$CERTS_SHARE" \
-            --source /tmp/certs/server.key --path server.key --overwrite
+            --source /tmp/certs/server.key --path server.key
 
           az storage file upload --share-name "$CERTS_SHARE" \
-            --source /tmp/certs/ca.crt --path ca.crt --overwrite
+            --source /tmp/certs/ca.crt --path ca.crt
 
           echo "✅ TLS certificates uploaded to $CERTS_SHARE"
 
@@ -228,7 +228,7 @@ jobs:
           echo "📤 Uploading bridge CA to $BRIDGE_CERTS_SHARE..."
 
           az storage file upload --share-name "$BRIDGE_CERTS_SHARE" \
-            --source /tmp/certs/production_ca.crt --path production_ca.crt --overwrite
+            --source /tmp/certs/production_ca.crt --path production_ca.crt
 
           echo "✅ Bridge CA uploaded to $BRIDGE_CERTS_SHARE"
 
