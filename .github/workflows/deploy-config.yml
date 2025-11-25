@@ -3,8 +3,7 @@ name: Deploy MQTT Configuration
 on:
   push:
     branches:
-      - main
-      - master
+      - '**'  # Run on all branches
     paths:
       - 'config/**'
       - 'scripts/**'
@@ -292,15 +291,13 @@ jobs:
           az storage file upload \
             --share-name ${{ steps.env.outputs.file_share_config_1 }} \
             --source /tmp/mosquitto-1.conf \
-            --path mosquitto.conf \
-            --overwrite
+            --path mosquitto.conf
 
           # Upload shared password.txt
           az storage file upload \
             --share-name ${{ steps.env.outputs.file_share_config_1 }} \
             --source /tmp/password.txt \
-            --path password.txt \
-            --overwrite
+            --path password.txt
 
           echo "✅ mqtt-1 configuration uploaded"
 
@@ -316,15 +313,13 @@ jobs:
           az storage file upload \
             --share-name ${{ steps.env.outputs.file_share_config_2 }} \
             --source /tmp/mosquitto-2.conf \
-            --path mosquitto.conf \
-            --overwrite
+            --path mosquitto.conf
 
           # Upload shared password.txt
           az storage file upload \
             --share-name ${{ steps.env.outputs.file_share_config_2 }} \
             --source /tmp/password.txt \
-            --path password.txt \
-            --overwrite
+            --path password.txt
 
           echo "✅ mqtt-2 configuration uploaded"
 
@@ -392,15 +387,13 @@ jobs:
           az storage file upload \
             --share-name ${{ steps.env.outputs.file_share_config }} \
             --source /tmp/mosquitto.conf \
-            --path mosquitto.conf \
-            --overwrite
+            --path mosquitto.conf
 
           # Upload password.txt
           az storage file upload \
             --share-name ${{ steps.env.outputs.file_share_config }} \
             --source /tmp/password.txt \
-            --path password.txt \
-            --overwrite
+            --path password.txt
 
           echo "✅ Configuration uploaded"
 
