@@ -174,17 +174,16 @@ jobs:
           echo "🔐 Generating self-signed certificates for ${{ env.ENVIRONMENT }} environment..."
           mkdir -p /tmp/certs
 
-          # Generate CA certificate
-          openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-            -keyout /tmp/certs/ca.key \
-            -out /tmp/certs/ca.crt \
-            -subj "/CN=IRIS ${{ env.ENVIRONMENT }} CA/O=APCOA/C=DE"
-
-          # Generate server certificate
+          # Generate single self-signed certificate for both server and CA
+          # This matches the prod_broker approach - simpler and works for dev/testing
           openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
             -keyout /tmp/certs/server.key \
             -out /tmp/certs/server.crt \
             -subj "/CN=*.westeurope.azurecontainer.io/O=APCOA/C=DE"
+
+          # Use same cert as CA (for self-signed, server cert IS the CA)
+          cp /tmp/certs/server.crt /tmp/certs/ca.crt
+          cp /tmp/certs/server.key /tmp/certs/ca.key
 
           # Generate production CA (self-signed for dev/uat testing)
           openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
