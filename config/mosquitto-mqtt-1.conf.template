@@ -1,5 +1,6 @@
 # Mosquitto MQTT Broker Configuration Template - mqtt-1
-# This template is for the first MQTT broker in the dual-broker setup
+# DEV: Simulates OUR production MQTT broker
+# This broker bridges TO the external company broker (simulated by mqtt-2)
 # DO NOT put sensitive data directly in this file
 
 # ==============================================
@@ -41,15 +42,17 @@ log_type information
 log_timestamp true
 
 # ==============================================
-# Bridge Configuration to Production Broker
+# Bridge Configuration to External Company Broker
+# DEV: mqtt-2 simulates the external company's broker
+# PRD: This would be the actual external company broker
 # ==============================================
-connection production-bridge
+connection external-company-bridge
 
-# Remote broker address
-address ${BRIDGE_REMOTE_ADDRESS}
+# Remote broker address (mqtt-2 in dev, external company in prd)
+address ${EXTERNAL_BROKER_ADDRESS}
 
 # Bridge TLS Configuration
-bridge_cafile /mosquitto/bridge_certs/production_ca.crt
+bridge_cafile /mosquitto/certs/ca.crt
 bridge_tls_version tlsv1.3
 
 # Authentication (populated by GitHub workflow from secrets)
@@ -64,39 +67,10 @@ bridge_protocol_version mqttv311
 
 # Bridge topics - Advantech device data
 # Format: topic pattern direction QoS
-topic Advantech/74FE4857C133/# both 0
-topic Advantech/74FE4857C1B3/# both 0
-
-# Bridge startup configuration
-start_type automatic
-restart_timeout 30
-keepalive_interval 60
-
-# ==============================================
-# Bridge Configuration to Peer MQTT Broker (mqtt-2)
-# Only enabled in dev environment for redundancy
-# ==============================================
-connection peer-mqtt-2
-
-# Peer broker address (mqtt-2)
-address ${PEER_MQTT_2_ADDRESS}
-
-# Peer bridge TLS configuration (uses same certs)
-bridge_cafile /mosquitto/certs/ca.crt
-bridge_tls_version tlsv1.3
-
-# Peer authentication (uses local credentials)
-remote_username ${PEER_USERNAME}
-remote_password ${PEER_PASSWORD}
-
-# Bridge connection settings
-cleansession false
-try_private true
-notifications false
-bridge_protocol_version mqttv311
-
-# Bridge all Advantech topics bidirectionally for redundancy
-topic Advantech/# both 0
+# out: mqtt-1 -> external company (we send data to them)
+# in: external company -> mqtt-1 (we receive data from them)
+topic Advantech/74FE4857C133/# out 0
+topic Advantech/74FE4857C1B3/# out 0
 
 # Bridge startup configuration
 start_type automatic
