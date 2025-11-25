@@ -3,6 +3,7 @@
 *.pem
 password.txt
 mosquitto.conf
+PASSWORDS.md
 
 # Keep only templates
 !*.template
