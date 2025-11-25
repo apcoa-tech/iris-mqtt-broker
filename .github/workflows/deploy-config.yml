@@ -261,6 +261,14 @@ jobs:
 
           echo "✅ mosquitto.conf for mqtt-2 generated"
 
+      - name: Install mosquitto tools
+        if: steps.env.outputs.deploy_dual_brokers == 'true'
+        run: |
+          echo "📦 Installing mosquitto tools..."
+          sudo apt-get update -qq
+          sudo apt-get install -y mosquitto
+          echo "✅ mosquitto_passwd installed"
+
       - name: Generate password.txt (shared)
         if: steps.env.outputs.deploy_dual_brokers == 'true'
         run: |
