@@ -53,7 +53,8 @@ address ${EXTERNAL_BROKER_ADDRESS}
 
 # Bridge TLS Configuration
 bridge_cafile /mosquitto/certs/ca.crt
-bridge_tls_version tlsv1.3
+bridge_insecure true
+bridge_tls_version tlsv1.2
 
 # Authentication (populated by GitHub workflow from secrets)
 remote_username ${BRIDGE_USERNAME}

@@ -51,7 +51,8 @@ address 3.121.198.76:8883
 # Bridge TLS Configuration
 # CA certificate is baked into Docker image
 bridge_cafile /mosquitto/bridge_certs/production_ca.crt
-bridge_tls_version tlsv1.3
+bridge_insecure true
+bridge_tls_version tlsv1.2
 
 # Authentication (populated by GitHub workflow from Key Vault)
 remote_username ${BRIDGE_USERNAME}
