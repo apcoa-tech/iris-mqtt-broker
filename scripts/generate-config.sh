@@ -4,19 +4,6 @@
 
 set -e
 
-# Check required environment variables
-required_vars=(
-  "BRIDGE_USERNAME"
-  "BRIDGE_PASSWORD"
-)
-
-for var in "${required_vars[@]}"; do
-  if [ -z "${!var}" ]; then
-    echo "Error: $var is not set"
-    exit 1
-  fi
-done
-
 # Template file
 TEMPLATE_FILE="${1:-config/mosquitto.conf.template}"
 OUTPUT_FILE="${2:-/tmp/mosquitto.conf}"
@@ -35,8 +22,12 @@ echo "✅ Configuration generated: $OUTPUT_FILE"
 
 # Validate configuration (check for unreplaced placeholders)
 if grep -q '\${' "$OUTPUT_FILE"; then
-  echo "⚠️  Warning: Configuration contains unreplaced placeholders:"
+  echo "❌ Error: Configuration contains unreplaced placeholders:"
   grep '\${' "$OUTPUT_FILE"
+  echo ""
+  echo "This likely means required environment variables are not set."
+  echo "Please check the workflow and ensure all variables used in the template are exported."
+  exit 1
 fi
 
 # Display config (with passwords masked)
