@@ -107,9 +107,7 @@ The MQTT broker runs on Azure Container Instances with persistent storage backed
 ```
 iris-mqtt-broker/
 ├── docker/
-│   ├── Dockerfile              # Custom Mosquitto image
-│   └── bridge_certs/
-│       └── production_ca.crt   # CA cert for remote broker (not secret)
+│   └── Dockerfile              # Custom Mosquitto image
 ├── config/
 │   ├── mosquitto.conf.template # Config template (placeholders for secrets)
 │   ├── env.template            # Environment config template
@@ -295,7 +293,7 @@ remote_password ${BRIDGE_PASSWORD}
 
 # Static configuration
 listener 8883 0.0.0.0
-bridge_cafile /mosquitto/bridge_certs/production_ca.crt
+bridge_cafile /mosquitto/certs/ca.crt
 ```
 
 GitHub Actions replaces `${VARIABLE}` with values from GitHub Secrets.
@@ -317,7 +315,6 @@ GitHub Actions replaces `${VARIABLE}` with values from GitHub Secrets.
 | Local user passwords | GitHub Secrets | ✅ Yes |
 | Server private key | Azure File Share (mqtt-certs) | ✅ Yes |
 | Server certificate | Azure File Share (mqtt-certs) | ⚠️  Semi-public |
-| Bridge CA certificate | Docker image | ❌ No (public CA) |
 | Config template | Git repository | ❌ No (no secrets) |
 | Generated config | Azure File Share (mqtt-config) | ✅ Yes (contains passwords) |
 

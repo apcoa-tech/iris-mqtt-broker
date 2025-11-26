@@ -10,7 +10,6 @@ The MQTT broker uses Azure File Shares to store certificates, configurations, da
 
 Each environment (dev/uat/prd) has the following file shares:
 - `iris-{env}-mqtt-certs` - Shared certificates (ca.crt, server.crt, server.key)
-- `iris-{env}-mqtt-bridge-certs` - Bridge-specific certificates
 - `iris-{env}-mqtt-1-config` - mqtt-1 configuration files
 - `iris-{env}-mqtt-2-config` - mqtt-2 configuration files
 - `iris-{env}-mqtt-1-data` - mqtt-1 persistent data

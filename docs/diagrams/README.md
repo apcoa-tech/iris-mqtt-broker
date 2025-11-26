@@ -10,7 +10,7 @@ This directory contains PlantUML diagrams documenting the MQTT broker deployment
 - Azure resources (Storage Account, Container Instances, File Shares)
 - How certificates are deployed from `prd_broker_certs/`
 - How GitHub Secrets are used (especially `MQTT_SERVER_KEY`)
-- All 8 file shares and their purposes
+- All 7 file shares and their purposes
 - Container mounts and relationships
 - The workflow steps from trigger to completion
 - Security features and notes
@@ -60,15 +60,14 @@ plantuml -tsvg workflow-sequence.puml
 2. **iris-container-instance-plugin**: Terraform for container infrastructure
 3. **iris-blob-storage-plugin**: Terraform for file share infrastructure
 
-### Azure File Shares (8 total)
+### Azure File Shares (7 total)
 1. **iris-dev-mqtt-certs**: Shared certificates for both brokers
-2. **iris-dev-mqtt-bridge-certs**: Bridge-specific certificates
-3. **iris-dev-mqtt-1-config**: mqtt-1 configuration files
-4. **iris-dev-mqtt-2-config**: mqtt-2 configuration files
-5. **iris-dev-mqtt-1-data**: mqtt-1 persistent data
-6. **iris-dev-mqtt-2-data**: mqtt-2 persistent data
-7. **iris-dev-mqtt-1-log**: mqtt-1 logs
-8. **iris-dev-mqtt-2-log**: mqtt-2 logs
+2. **iris-dev-mqtt-1-config**: mqtt-1 configuration files
+3. **iris-dev-mqtt-2-config**: mqtt-2 configuration files
+4. **iris-dev-mqtt-1-data**: mqtt-1 persistent data
+5. **iris-dev-mqtt-2-data**: mqtt-2 persistent data
+6. **iris-dev-mqtt-1-log**: mqtt-1 logs
+7. **iris-dev-mqtt-2-log**: mqtt-2 logs
 
 ### Certificate Management
 - **Public certificates** (ca.crt, server.crt): Stored in `prd_broker_certs/` directory
@@ -93,7 +92,7 @@ plantuml -tsvg workflow-sequence.puml
 ## Deployment Flow Summary
 
 1. **Infrastructure Creation** (One-time with Terraform):
-   - Create 8 file shares (blob-storage-plugin)
+   - Create 7 file shares (blob-storage-plugin)
    - Create 2 container instances (container-instance-plugin)
 
 2. **Configuration Deployment** (Via GitHub Actions workflow):

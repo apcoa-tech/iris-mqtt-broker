@@ -201,11 +201,6 @@ jobs:
             echo "⚠️  Production certificates not found in prd_broker_certs/"
           fi
 
-          # Copy production_ca.crt for bridge if it exists
-          if [ -f "docker/bridge_certs/production_ca.crt" ]; then
-            cp docker/bridge_certs/production_ca.crt /tmp/certs/production_ca.crt
-          fi
-
           echo "cert_source=$CERT_SOURCE" >> $GITHUB_OUTPUT
 
       - name: Generate self-signed certificates (Dev/UAT - if repo certs missing)
@@ -225,14 +220,6 @@ jobs:
           cp /tmp/certs/server.crt /tmp/certs/ca.crt
           cp /tmp/certs/server.key /tmp/certs/ca.key
 
-          # Generate production CA (self-signed for dev/uat testing)
-          if [ ! -f "/tmp/certs/production_ca.crt" ]; then
-            openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-              -keyout /tmp/certs/production_ca.key \
-              -out /tmp/certs/production_ca.crt \
-              -subj "/CN=Production CA Simulator/O=APCOA/C=DE"
-          fi
-
           echo "✅ Self-signed certificates generated"
 
       - name: Upload certificates (if generated)
@@ -248,7 +235,6 @@ jobs:
           fi
 
           CERTS_SHARE="iris-${{ env.ENVIRONMENT }}-mqtt-certs"
-          BRIDGE_CERTS_SHARE="iris-${{ env.ENVIRONMENT }}-mqtt-bridge-certs"
 
           echo "📤 Uploading TLS certificates to $CERTS_SHARE..."
 
@@ -263,14 +249,6 @@ jobs:
             --source /tmp/certs/ca.crt --path ca.crt
 
           echo "✅ TLS certificates uploaded to $CERTS_SHARE"
-
-          # Upload bridge CA certificate
-          echo "📤 Uploading bridge CA to $BRIDGE_CERTS_SHARE..."
-
-          az storage file upload --share-name "$BRIDGE_CERTS_SHARE" \
-            --source /tmp/certs/production_ca.crt --path production_ca.crt
-
-          echo "✅ Bridge CA uploaded to $BRIDGE_CERTS_SHARE"
 
       # ============================================================
       # DUAL BROKER DEPLOYMENT (DEV)
