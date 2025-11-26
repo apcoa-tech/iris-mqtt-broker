@@ -60,8 +60,8 @@ remote_username ${BRIDGE_USERNAME}
 remote_password ${BRIDGE_PASSWORD}
 
 # Bridge connection settings
-cleansession false
-try_private true
+cleansession true
+try_private false
 notifications false
 bridge_protocol_version mqttv311
 
@@ -76,7 +76,6 @@ topic Advantech/74FE4857C1B3/# both 0
 # Bridge startup configuration
 start_type automatic
 restart_timeout 30
-keepalive_interval 60
 
 # ==============================================
 # Performance Tuning
