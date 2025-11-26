@@ -4,6 +4,7 @@
 password.txt
 mosquitto.conf
 PASSWORDS.md
+config/mqtt_explorer.env
 
 # Keep only templates
 !*.template
