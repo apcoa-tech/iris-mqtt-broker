@@ -1,0 +1,162 @@
+@startuml Workflow Deployment Sequence
+
+!define AzureColor #0078D4
+!define GitHubColor #2088FF
+
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Arial
+skinparam sequenceMessageAlign center
+
+title MQTT Broker Configuration Deployment Workflow Sequence
+
+actor Developer
+participant "GitHub Actions" as GH #GitHubColor
+participant "iris-mqtt-broker\nRepository" as Repo
+database "GitHub Secrets" as Secrets
+participant "Azure CLI" as AzCLI #AzureColor
+database "Azure Storage\n(irisstdev001)" as Storage #AzureColor
+participant "Container Instance\nmqtt-1" as Container1 #AzureColor
+participant "Container Instance\nmqtt-2" as Container2 #AzureColor
+
+== Workflow Trigger ==
+Developer -> GH : Push to main\nor Manual dispatch\n(workflow_dispatch)
+activate GH
+
+== Authentication ==
+GH -> Secrets : Azure Login with OIDC
+Secrets --> GH : AZURE_CLIENT_ID credentials
+GH -> AzCLI : Authenticate
+activate AzCLI
+
+== Load Configuration ==
+GH -> Repo : Load environment config
+Repo --> GH : env.dev (variables)
+GH -> Secrets : Get passwords & secrets
+Secrets --> GH : PASSWORD_*, BRIDGE_PASSWORD
+Secrets --> GH : MQTT_SERVER_KEY (private key)
+
+== Storage Account Access ==
+GH -> AzCLI : Get storage account keys
+AzCLI -> Storage : List keys
+Storage --> AzCLI : Account key
+AzCLI --> GH : Storage key
+
+== Certificate Deployment ==
+GH -> Storage : Check if certificates exist\nin iris-dev-mqtt-certs/
+Storage --> GH : Not found
+
+alt Certificates DO NOT exist
+  GH -> Repo : Read prd_broker_certs/ca.crt
+  Repo --> GH : CA certificate (1139 bytes)
+  GH -> Repo : Read prd_broker_certs/server.crt
+  Repo --> GH : Server certificate (1111 bytes)
+  GH -> Secrets : Get MQTT_SERVER_KEY
+  Secrets --> GH : Private key content (1704 bytes)
+
+  note right of GH
+    Production certificates:
+    - ca.crt: Single CA cert (not chain)
+    - server.crt: Server certificate
+    - server.key: From GitHub Secret
+  end note
+
+  GH -> Storage : Upload ca.crt to\niris-dev-mqtt-certs/
+  GH -> Storage : Upload server.crt to\niris-dev-mqtt-certs/
+  GH -> Storage : Upload server.key to\niris-dev-mqtt-certs/
+  Storage --> GH : Upload complete
+else Certificates exist
+  note right of GH
+    Skip certificate upload
+    Use existing certificates
+  end note
+end
+
+== Configuration Generation ==
+GH -> Repo : Read mosquitto-mqtt-1.conf.template
+Repo --> GH : Template content
+GH -> GH : envsubst: Replace variables\n${EXTERNAL_BROKER_ADDRESS}\n${BRIDGE_USERNAME}\n${BRIDGE_PASSWORD}
+GH -> GH : Generate mosquitto.conf for mqtt-1
+
+GH -> Repo : Read mosquitto-mqtt-2.conf.template
+Repo --> GH : Template content
+GH -> GH : envsubst: Replace variables
+GH -> GH : Generate mosquitto.conf for mqtt-2
+
+GH -> GH : Install mosquitto_passwd tool
+GH -> GH : Generate password.txt with:\n- device_user\n- admin_user\n- external_integration_user
+
+== Configuration Upload ==
+GH -> Storage : Upload mosquitto.conf to\niris-dev-mqtt-1-config/
+GH -> Storage : Upload password.txt to\niris-dev-mqtt-1-config/
+Storage --> GH : Upload complete
+
+GH -> Storage : Upload mosquitto.conf to\niris-dev-mqtt-2-config/
+GH -> Storage : Upload password.txt to\niris-dev-mqtt-2-config/
+Storage --> GH : Upload complete
+
+== Container Restart ==
+GH -> AzCLI : Restart container iris-dev-mqtt-1
+AzCLI -> Container1 : Stop & Start
+activate Container1
+Container1 -> Storage : Mount /mosquitto/certs\n(read-only)
+Container1 -> Storage : Mount /mosquitto/config\n(read-write)
+Container1 -> Storage : Mount /mosquitto/data\n(read-write)
+Container1 -> Storage : Mount /mosquitto/log\n(read-write)
+Container1 -> Container1 : Load certificates\nca.crt, server.crt, server.key
+Container1 -> Container1 : Load configuration\nmosquitto.conf
+Container1 -> Container1 : Load passwords\npassword.txt
+Container1 -> Container1 : Start Mosquitto broker
+Container1 --> AzCLI : Running
+note right of Container1
+  Mosquitto starts:
+  ✓ TLS listener on 8883
+  ✓ No certificate errors
+  ✓ Bridge configured
+end note
+
+GH -> AzCLI : Restart container iris-dev-mqtt-2
+AzCLI -> Container2 : Stop & Start
+activate Container2
+Container2 -> Storage : Mount /mosquitto/certs\n(read-only)
+Container2 -> Storage : Mount /mosquitto/config\n(read-write)
+Container2 -> Storage : Mount /mosquitto/data\n(read-write)
+Container2 -> Storage : Mount /mosquitto/log\n(read-write)
+Container2 -> Container2 : Load certificates
+Container2 -> Container2 : Load configuration
+Container2 -> Container2 : Start Mosquitto broker
+Container2 --> AzCLI : Running
+note right of Container2
+  Mosquitto starts:
+  ✓ TLS listener on 8883
+  ✓ Accepts bridge connections
+end note
+
+== Status Check ==
+GH -> AzCLI : Check container status\nmqtt-1
+AzCLI -> Container1 : Get state
+Container1 --> AzCLI : state=Running
+AzCLI --> GH : Running
+
+GH -> AzCLI : Check container status\nmqtt-2
+AzCLI -> Container2 : Get state
+Container2 --> AzCLI : state=Running
+AzCLI --> GH : Running
+
+note over GH
+  ✅ Both containers running
+  ✅ Certificates deployed
+  ✅ Configurations deployed
+end note
+
+== Bridge Connection ==
+Container1 -> Container2 : Establish MQTT bridge\nTLS 1.3, port 8883
+Container2 --> Container1 : Bridge connected
+
+deactivate Container1
+deactivate Container2
+deactivate AzCLI
+deactivate GH
+
+Developer <-- GH : Workflow completed successfully
+
+@enduml

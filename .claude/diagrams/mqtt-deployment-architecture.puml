@@ -1,0 +1,209 @@
+@startuml MQTT Broker Deployment Architecture
+
+!define AzureColor #0078D4
+!define GitHubColor #181717
+!define TerraformColor #7B42BC
+!define WorkflowColor #2088FF
+
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Arial
+skinparam componentStyle rectangle
+
+title MQTT Broker Deployment Architecture & Workflow
+
+' GitHub Repositories
+package "GitHub Repositories" as github #GitHubColor {
+  component "iris-mqtt-broker" as mqtt_repo #WorkflowColor {
+    artifact "deploy-config.yml\n(GitHub Actions)" as workflow
+    folder "prd_broker_certs/" as cert_folder {
+      file "ca.crt" as ca_public
+      file "server.crt" as server_public
+    }
+    folder "config/" as config_folder {
+      file "mosquitto-mqtt-1.conf.template" as mqtt1_template
+      file "mosquitto-mqtt-2.conf.template" as mqtt2_template
+      file "env.dev" as env_dev
+    }
+  }
+
+  component "iris-container-instance-plugin" as container_repo #TerraformColor {
+    folder "dev/" as container_tf {
+      file "main.tf" as container_main
+      file "locals.tf" as container_locals
+    }
+  }
+
+  component "iris-blob-storage-plugin" as blob_repo #TerraformColor {
+    folder "dev/" as blob_tf {
+      file "main.tf" as blob_main
+      file "locals.tf" as blob_locals
+    }
+  }
+}
+
+' GitHub Secrets
+database "GitHub Secrets" as gh_secrets #GitHubColor {
+  artifact "MQTT_SERVER_KEY" as server_key_secret
+  artifact "PASSWORD_*" as passwords
+  artifact "AZURE_CLIENT_ID" as azure_oidc
+}
+
+' Azure Resources
+cloud "Azure (iot-dev)" as azure #AzureColor {
+
+  package "Storage Account\n(irisstdev001)" as storage {
+
+    frame "Certificate File Shares" as cert_shares {
+      storage "iris-dev-mqtt-certs" as mqtt_certs {
+        file "ca.crt (1139B)" as ca_deployed
+        file "server.crt (1111B)" as server_deployed
+        file "server.key (1704B)" as key_deployed
+      }
+      storage "iris-dev-mqtt-bridge-certs" as bridge_certs
+    }
+
+    frame "Configuration File Shares" as config_shares {
+      storage "iris-dev-mqtt-1-config" as mqtt1_config {
+        file "mosquitto.conf" as mqtt1_conf
+        file "password.txt" as mqtt1_pwd
+      }
+      storage "iris-dev-mqtt-2-config" as mqtt2_config {
+        file "mosquitto.conf" as mqtt2_conf
+        file "password.txt" as mqtt2_pwd
+      }
+    }
+
+    frame "Data & Log File Shares" as data_shares {
+      storage "iris-dev-mqtt-1-data" as mqtt1_data
+      storage "iris-dev-mqtt-1-log" as mqtt1_log
+      storage "iris-dev-mqtt-2-data" as mqtt2_data
+      storage "iris-dev-mqtt-2-log" as mqtt2_log
+    }
+  }
+
+  package "Container Instances" as containers {
+    node "iris-dev-mqtt-1\n20.31.182.8:8883" as mqtt1_container {
+      component "Mosquitto 2.0.22\n(Our Broker)" as mosquitto1
+    }
+
+    node "iris-dev-mqtt-2\n51.105.149.172:8883" as mqtt2_container {
+      component "Mosquitto 2.0.22\n(External Company Sim)" as mosquitto2
+    }
+  }
+}
+
+' Workflow Steps
+rectangle "Deployment Workflow Steps" as workflow_steps #WorkflowColor {
+  rectangle "1. Check Certificates\nExist in Azure?" as step1
+  rectangle "2. Use Production Certs\nfrom prd_broker_certs/" as step2
+  rectangle "3. Get Private Key\nfrom GitHub Secrets" as step3
+  rectangle "4. Upload Certificates\nto Azure File Share" as step4
+  rectangle "5. Generate Configs\nfrom Templates + Secrets" as step5
+  rectangle "6. Upload Configs\nto Azure File Shares" as step6
+  rectangle "7. Restart Containers\nvia Azure CLI" as step7
+}
+
+' Infrastructure Creation
+rectangle "Infrastructure Creation\n(One-time)" as infra #TerraformColor {
+  rectangle "1. Create File Shares\n(iris-blob-storage-plugin)" as infra_blob
+  rectangle "2. Create Containers\n(iris-container-instance-plugin)" as infra_container
+}
+
+' Relationships - Infrastructure
+blob_tf --> storage : "terraform apply\ncreates 8 file shares"
+container_tf --> mqtt1_container : "terraform apply\ncreates container"
+container_tf --> mqtt2_container : "terraform apply\ncreates container"
+
+' Relationships - Workflow Trigger
+workflow --> step1 : "triggered by:\n- push to main\n- manual dispatch\n- workflow_dispatch"
+gh_secrets --> workflow : "OIDC authentication"
+
+' Relationships - Workflow Steps
+step1 --> step2 : "if certs\nDO NOT exist"
+step2 --> ca_public : "copy ca.crt"
+step2 --> server_public : "copy server.crt"
+step3 --> server_key_secret : "read secret"
+
+step4 --> ca_deployed : "upload"
+step4 --> server_deployed : "upload"
+step4 --> key_deployed : "upload from secret"
+
+step5 --> mqtt1_template : "envsubst with:"
+step5 --> mqtt2_template : "envsubst with:"
+step5 --> env_dev : "environment vars"
+step5 --> passwords : "passwords from secrets"
+
+step6 --> mqtt1_conf : "upload"
+step6 --> mqtt2_conf : "upload"
+step6 --> mqtt1_pwd : "upload"
+step6 --> mqtt2_pwd : "upload"
+
+step7 --> mqtt1_container : "az container restart"
+step7 --> mqtt2_container : "az container restart"
+
+' Relationships - Container Mounts
+mqtt_certs --> mosquitto1 : "mount read-only\n/mosquitto/certs"
+mqtt_certs --> mosquitto2 : "mount read-only\n/mosquitto/certs"
+bridge_certs --> mosquitto1 : "mount read-only\n/mosquitto/bridge_certs"
+bridge_certs --> mosquitto2 : "mount read-only\n/mosquitto/bridge_certs"
+
+mqtt1_config --> mosquitto1 : "mount read-write\n/mosquitto/config"
+mqtt2_config --> mosquitto2 : "mount read-write\n/mosquitto/config"
+
+mqtt1_data --> mosquitto1 : "mount read-write\n/mosquitto/data"
+mqtt2_data --> mosquitto2 : "mount read-write\n/mosquitto/data"
+
+mqtt1_log --> mosquitto1 : "mount read-write\n/mosquitto/log"
+mqtt2_log --> mosquitto2 : "mount read-write\n/mosquitto/log"
+
+' Bridge connection
+mosquitto1 --> mosquitto2 : "MQTT bridge\nTLS 1.3 connection"
+
+' Notes
+note right of cert_folder
+  Production certificates
+  (public keys only)
+  Private key is in GitHub Secrets
+end note
+
+note right of server_key_secret
+  Private key stored securely
+  NEVER committed to git
+  Retrieved at workflow runtime
+end note
+
+note bottom of mqtt_certs
+  Single CA certificate
+  (NOT a chain)
+  Prevents "bad end line" errors
+end note
+
+note right of mosquitto1
+  - Listens on 8883 (TLS)
+  - Bridges to mqtt-2
+  - allow_anonymous: false
+  - password authentication
+end note
+
+note right of mosquitto2
+  - Listens on 8883 (TLS)
+  - Simulates external company
+  - Receives bridge connections
+end note
+
+legend right
+  |= Color |= Component |
+  | <back:#0078D4>   </back> | Azure Resources |
+  | <back:#181717>   </back> | GitHub |
+  | <back:#7B42BC>   </back> | Terraform |
+  | <back:#2088FF>   </back> | GitHub Actions |
+
+  **Key Security Features:**
+  * Private keys stored in GitHub Secrets
+  * Private keys removed from git history
+  * TLS 1.3 for all connections
+  * Password authentication required
+  * Read-only certificate mounts
+endlegend
+
+@enduml
