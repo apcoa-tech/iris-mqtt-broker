@@ -50,7 +50,7 @@ address ${BRIDGE_REMOTE_ADDRESS}
 
 # Bridge TLS Configuration
 bridge_cafile /mosquitto/bridge_certs/external_company_ca.crt
-bridge_tls_version tlsv1.3
+bridge_tls_version tlsv1.2
 
 # Authentication (populated by GitHub workflow from secrets)
 remote_username ${BRIDGE_USERNAME}

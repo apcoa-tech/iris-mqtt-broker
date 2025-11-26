@@ -168,58 +168,84 @@ jobs:
           echo "cert_exists=$CERT_EXISTS" >> $GITHUB_OUTPUT
           echo "📋 Certificates exist: $CERT_EXISTS"
 
-      - name: Use production certificates (committed to repo)
+      - name: Use production certificates (from repo)
+        id: repo_certs
+        if: steps.cert_check.outputs.cert_exists == 'false'
+        env:
+          MQTT_SERVER_KEY: ${{ secrets.MQTT_SERVER_KEY }}
         run: |
-          echo "🔐 Using production certificates from prod_broker directory..."
+          CERT_SOURCE="none"
           mkdir -p /tmp/certs
 
-          # Copy production certificates from the repo
-          # These are proper CA-signed certificates used in production
-          echo "Copying ca.crt, server.crt, and server.key from committed files..."
+          # Check if prd_broker_certs directory exists with public certs
+          # Private key (server.key) comes from GitHub Secrets
+          if [ -d "prd_broker_certs" ] && \
+             [ -f "prd_broker_certs/ca.crt" ] && \
+             [ -f "prd_broker_certs/server.crt" ]; then
+            echo "🔐 Using production certificates from prd_broker_certs/"
+            cp prd_broker_certs/ca.crt /tmp/certs/ca.crt
+            cp prd_broker_certs/server.crt /tmp/certs/server.crt
 
-          # For dev/uat, we use the same production certificates for consistency
-          # CA cert: CN=IRIS Production CA (self-signed CA)
-          # Server cert: CN=prod-mosquitto (signed by the CA)
-
-          # Check if certificates exist in repo root (ca.crt and server.crt are committed)
-          if [ -f "ca.crt" ] && [ -f "server.crt" ]; then
-            cp ca.crt /tmp/certs/ca.crt
-            cp server.crt /tmp/certs/server.crt
-            echo "✅ Production certificates (ca.crt, server.crt) copied from repo"
+            # Get private key from GitHub Secrets
+            if [ -n "$MQTT_SERVER_KEY" ]; then
+              echo "$MQTT_SERVER_KEY" > /tmp/certs/server.key
+              chmod 600 /tmp/certs/server.key
+              echo "✅ Production certificates loaded (public from repo, private key from secrets)"
+              CERT_SOURCE="repo"
+            else
+              echo "❌ MQTT_SERVER_KEY secret not found!"
+              echo "Please add the server.key content to GitHub Secrets as MQTT_SERVER_KEY"
+              exit 1
+            fi
           else
-            echo "❌ Production certificates not found in repo!"
-            echo "Expected files: ca.crt, server.crt"
-            exit 1
+            echo "⚠️  Production certificates not found in prd_broker_certs/"
           fi
 
-          # Private key from GitHub Secrets (never committed to repo)
-          if [ -n "${{ secrets.MQTT_SERVER_KEY }}" ]; then
-            echo "${{ secrets.MQTT_SERVER_KEY }}" > /tmp/certs/server.key
-            chmod 600 /tmp/certs/server.key
-            echo "✅ Server private key loaded from GitHub Secrets"
-          else
-            echo "❌ MQTT_SERVER_KEY secret not found!"
-            echo "Please add the server.key content to GitHub Secrets as MQTT_SERVER_KEY"
-            exit 1
-          fi
-
-          # Copy production CA certificate for bridge
+          # Copy production_ca.crt for bridge if it exists
           if [ -f "docker/bridge_certs/production_ca.crt" ]; then
             cp docker/bridge_certs/production_ca.crt /tmp/certs/production_ca.crt
-            echo "✅ Production CA certificate for bridge copied"
-          else
-            echo "⚠️  Warning: Production CA certificate for bridge not found"
-            echo "Bridge connections may fail if external broker uses different CA"
           fi
 
-          echo "✅ All certificates prepared from production files"
+          echo "cert_source=$CERT_SOURCE" >> $GITHUB_OUTPUT
 
-      - name: Upload certificates (force overwrite)
+      - name: Generate self-signed certificates (Dev/UAT - if repo certs missing)
+        if: steps.cert_check.outputs.cert_exists == 'false' && steps.repo_certs.outputs.cert_source == 'none' && env.ENVIRONMENT != 'prd'
+        run: |
+          echo "🔐 Generating self-signed certificates for ${{ env.ENVIRONMENT }} environment..."
+          mkdir -p /tmp/certs
+
+          # Generate single self-signed certificate for both server and CA
+          # This matches the prod_broker approach - simpler and works for dev/testing
+          openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+            -keyout /tmp/certs/server.key \
+            -out /tmp/certs/server.crt \
+            -subj "/CN=*.westeurope.azurecontainer.io/O=APCOA/C=DE"
+
+          # Use same cert as CA (for self-signed, server cert IS the CA)
+          cp /tmp/certs/server.crt /tmp/certs/ca.crt
+          cp /tmp/certs/server.key /tmp/certs/ca.key
+
+          # Generate production CA (self-signed for dev/uat testing)
+          if [ ! -f "/tmp/certs/production_ca.crt" ]; then
+            openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+              -keyout /tmp/certs/production_ca.key \
+              -out /tmp/certs/production_ca.crt \
+              -subj "/CN=Production CA Simulator/O=APCOA/C=DE"
+          fi
+
+          echo "✅ Self-signed certificates generated"
+
+      - name: Upload certificates (if generated)
+        if: steps.cert_check.outputs.cert_exists == 'false'
         env:
           AZURE_STORAGE_ACCOUNT: ${{ steps.env.outputs.storage_account }}
           AZURE_STORAGE_KEY: ${{ steps.storage.outputs.storage_key }}
         run: |
-          echo "📤 Uploading production certificates to Azure File Share..."
+          if [ "${{ env.ENVIRONMENT }}" = "prd" ]; then
+            echo "❌ Production environment requires proper CA-signed certificates"
+            echo "Please upload certificates manually to iris-prd-mqtt-certs file share"
+            exit 1
+          fi
 
           CERTS_SHARE="iris-${{ env.ENVIRONMENT }}-mqtt-certs"
           BRIDGE_CERTS_SHARE="iris-${{ env.ENVIRONMENT }}-mqtt-bridge-certs"
