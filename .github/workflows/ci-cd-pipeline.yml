@@ -318,6 +318,14 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Setup bridge password
+        run: |
+          echo "Setting up bridge password from GitHub Secrets..."
+          BRIDGE_PASSWORD="${{ secrets.MQTT_BRIDGE_PASSWORD }}"
+          echo "::add-mask::$BRIDGE_PASSWORD"
+          echo "BRIDGE_PASSWORD=$BRIDGE_PASSWORD" >> $GITHUB_ENV
+          echo "Bridge password configured"
+
       - name: Generate mosquitto.conf for mqtt-1
         if: steps.env.outputs.deploy_dual_brokers == 'true'
         env:
