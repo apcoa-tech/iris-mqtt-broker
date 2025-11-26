@@ -1,0 +1,412 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - uat
+          - prd
+      image_tag:
+        description: 'Docker image tag (leave empty for auto-generated)'
+        required: false
+        default: ''
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  ACR_NAME: irisacrdev001
+  IMAGE_NAME: mosquitto
+
+jobs:
+  # ============================================================
+  # STAGE 1: Build Docker Image
+  # ============================================================
+  build:
+    name: 🔨 Build Image
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.tags.outputs.tag }}
+      image_full: ${{ steps.tags.outputs.full }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: tags
+        run: |
+          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            TAG="${{ github.event.inputs.image_tag }}"
+          else
+            TAG="$(date +%Y%m%d)-${GITHUB_SHA::8}"
+          fi
+
+          FULL_TAG="${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:$TAG"
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "full=$FULL_TAG" >> $GITHUB_OUTPUT
+          echo "📦 Image tag: $TAG"
+
+      - name: Azure Login with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to Azure Container Registry
+        run: az acr login --name ${{ env.ACR_NAME }}
+
+      - name: Build Docker image
+        working-directory: docker
+        run: |
+          docker build \
+            -t ${{ steps.tags.outputs.full }} \
+            -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:latest \
+            --label "git.commit=${{ github.sha }}" \
+            --label "git.branch=${{ github.ref_name }}" \
+            --label "build.date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            .
+
+          echo "✅ Image built successfully"
+
+      - name: Scan image for vulnerabilities
+        continue-on-error: true
+        run: |
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update && sudo apt-get install -y trivy
+
+          trivy image --severity HIGH,CRITICAL --format table ${{ steps.tags.outputs.full }}
+
+      - name: Push image to ACR
+        run: |
+          docker push ${{ steps.tags.outputs.full }}
+          docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:latest
+
+          echo "✅ Image pushed: ${{ steps.tags.outputs.full }}"
+
+  # ============================================================
+  # STAGE 2: Deploy Certificates
+  # ============================================================
+  deploy-certificates:
+    name: 🔐 Deploy Certificates
+    runs-on: ubuntu-latest
+    needs: build
+    outputs:
+      environment: ${{ steps.env.outputs.environment }}
+      storage_account: ${{ steps.env.outputs.storage_account }}
+      storage_key: ${{ steps.storage.outputs.storage_key }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Load environment config
+        id: env
+        run: |
+          ENV="${{ github.event.inputs.environment }}"
+          if [ -z "$ENV" ]; then
+            ENV="dev"
+          fi
+
+          echo "environment=$ENV" >> $GITHUB_OUTPUT
+
+          source config/env.$ENV
+          echo "resource_group=$RESOURCE_GROUP" >> $GITHUB_OUTPUT
+          echo "storage_account=$STORAGE_ACCOUNT" >> $GITHUB_OUTPUT
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get storage account key
+        id: storage
+        run: |
+          STORAGE_KEY=$(az storage account keys list \
+            --resource-group ${{ steps.env.outputs.resource_group }} \
+            --account-name ${{ steps.env.outputs.storage_account }} \
+            --query '[0].value' -o tsv)
+
+          echo "storage_key=$STORAGE_KEY" >> $GITHUB_OUTPUT
+
+      - name: Check if certificates exist
+        id: cert_check
+        env:
+          AZURE_STORAGE_ACCOUNT: ${{ steps.env.outputs.storage_account }}
+          AZURE_STORAGE_KEY: ${{ steps.storage.outputs.storage_key }}
+        run: |
+          CERTS_SHARE="iris-${{ steps.env.outputs.environment }}-mqtt-certs"
+
+          if az storage file exists --share-name "$CERTS_SHARE" --path ca.crt --query exists -o tsv | grep -q true; then
+            echo "cert_exists=true" >> $GITHUB_OUTPUT
+            echo "✅ Certificates already exist in Azure"
+          else
+            echo "cert_exists=false" >> $GITHUB_OUTPUT
+            echo "⚠️  Certificates not found - will deploy"
+          fi
+
+      - name: Deploy production certificates
+        if: steps.cert_check.outputs.cert_exists == 'false'
+        env:
+          AZURE_STORAGE_ACCOUNT: ${{ steps.env.outputs.storage_account }}
+          AZURE_STORAGE_KEY: ${{ steps.storage.outputs.storage_key }}
+        run: |
+          mkdir -p /tmp/certs
+          CERTS_SHARE="iris-${{ steps.env.outputs.environment }}-mqtt-certs"
+
+          # Copy production certificates
+          cp prd_broker_certs/ca.crt /tmp/certs/ca.crt
+          cp prd_broker_certs/server.crt /tmp/certs/server.crt
+          echo "${{ secrets.MQTT_SERVER_KEY }}" > /tmp/certs/server.key
+
+          echo "📤 Uploading TLS certificates to $CERTS_SHARE..."
+
+          az storage file upload --share-name "$CERTS_SHARE" \
+            --source /tmp/certs/server.crt --path server.crt
+
+          az storage file upload --share-name "$CERTS_SHARE" \
+            --source /tmp/certs/server.key --path server.key
+
+          az storage file upload --share-name "$CERTS_SHARE" \
+            --source /tmp/certs/ca.crt --path ca.crt
+
+          echo "✅ TLS certificates uploaded"
+
+  # ============================================================
+  # STAGE 3: Deploy Configuration
+  # ============================================================
+  deploy-configuration:
+    name: ⚙️ Deploy Config
+    runs-on: ubuntu-latest
+    needs: deploy-certificates
+    outputs:
+      deploy_dual_brokers: ${{ steps.env.outputs.deploy_dual_brokers }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Load environment config
+        id: env
+        run: |
+          ENV="${{ needs.deploy-certificates.outputs.environment }}"
+          source config/env.$ENV
+
+          echo "deploy_dual_brokers=$DEPLOY_DUAL_BROKERS" >> $GITHUB_OUTPUT
+          echo "external_broker_address=$EXTERNAL_BROKER_ADDRESS" >> $GITHUB_OUTPUT
+          echo "bridge_username=$BRIDGE_USERNAME" >> $GITHUB_OUTPUT
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Generate mosquitto.conf for mqtt-1
+        if: steps.env.outputs.deploy_dual_brokers == 'true'
+        env:
+          BRIDGE_USERNAME: ${{ steps.env.outputs.bridge_username }}
+          EXTERNAL_BROKER_ADDRESS: ${{ steps.env.outputs.external_broker_address }}
+        run: |
+          ./scripts/generate-config.sh \
+            config/mosquitto-mqtt-1.conf.template \
+            /tmp/mosquitto-1.conf
+
+          echo "✅ mosquitto.conf for mqtt-1 generated"
+
+      - name: Generate mosquitto.conf for mqtt-2
+        if: steps.env.outputs.deploy_dual_brokers == 'true'
+        run: |
+          ./scripts/generate-config.sh \
+            config/mosquitto-mqtt-2.conf.template \
+            /tmp/mosquitto-2.conf
+
+          echo "✅ mosquitto.conf for mqtt-2 generated"
+
+      - name: Generate password files
+        run: |
+          ./scripts/generate-password-file.sh \
+            "${{ secrets.PASSWORD_DEVICE_USER }}" \
+            "${{ secrets.PASSWORD_ADMIN_USER }}" \
+            "${{ secrets.PASSWORD_EXTERNAL_INTEGRATION_USER }}" \
+            /tmp/password.txt
+
+          echo "✅ Password file generated"
+
+      - name: Upload configuration files
+        env:
+          AZURE_STORAGE_ACCOUNT: ${{ needs.deploy-certificates.outputs.storage_account }}
+          AZURE_STORAGE_KEY: ${{ needs.deploy-certificates.outputs.storage_key }}
+        run: |
+          ENV="${{ needs.deploy-certificates.outputs.environment }}"
+
+          # Upload mqtt-1 config
+          az storage file upload \
+            --share-name "iris-${ENV}-mqtt-1-config" \
+            --source /tmp/mosquitto-1.conf \
+            --path mosquitto.conf
+
+          az storage file upload \
+            --share-name "iris-${ENV}-mqtt-1-config" \
+            --source /tmp/password.txt \
+            --path password.txt
+
+          # Upload mqtt-2 config
+          az storage file upload \
+            --share-name "iris-${ENV}-mqtt-2-config" \
+            --source /tmp/mosquitto-2.conf \
+            --path mosquitto.conf
+
+          az storage file upload \
+            --share-name "iris-${ENV}-mqtt-2-config" \
+            --source /tmp/password.txt \
+            --path password.txt
+
+          echo "✅ Configuration files uploaded"
+
+  # ============================================================
+  # STAGE 4: Restart Containers
+  # ============================================================
+  restart-containers:
+    name: 🔄 Restart Containers
+    runs-on: ubuntu-latest
+    needs: [deploy-configuration, build]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Load environment config
+        id: env
+        run: |
+          ENV="${{ needs.deploy-certificates.outputs.environment }}"
+          source config/env.$ENV
+
+          echo "container_group_1=$CONTAINER_GROUP_1" >> $GITHUB_OUTPUT
+          echo "container_group_2=$CONTAINER_GROUP_2" >> $GITHUB_OUTPUT
+          echo "resource_group=$RESOURCE_GROUP" >> $GITHUB_OUTPUT
+          echo "deploy_dual_brokers=$DEPLOY_DUAL_BROKERS" >> $GITHUB_OUTPUT
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Restart mqtt-1 container
+        run: |
+          echo "🔄 Restarting ${{ steps.env.outputs.container_group_1 }}..."
+
+          az container restart \
+            --resource-group ${{ steps.env.outputs.resource_group }} \
+            --name ${{ steps.env.outputs.container_group_1 }}
+
+          echo "✅ Container restarted"
+
+      - name: Restart mqtt-2 container
+        if: steps.env.outputs.deploy_dual_brokers == 'true'
+        run: |
+          echo "🔄 Restarting ${{ steps.env.outputs.container_group_2 }}..."
+
+          az container restart \
+            --resource-group ${{ steps.env.outputs.resource_group }} \
+            --name ${{ steps.env.outputs.container_group_2 }}
+
+          echo "✅ Container restarted"
+
+  # ============================================================
+  # STAGE 5: Verify Deployment
+  # ============================================================
+  verify:
+    name: ✅ Verify Deployment
+    runs-on: ubuntu-latest
+    needs: restart-containers
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Load environment config
+        id: env
+        run: |
+          ENV="${{ needs.deploy-certificates.outputs.environment }}"
+          source config/env.$ENV
+
+          echo "container_group_1=$CONTAINER_GROUP_1" >> $GITHUB_OUTPUT
+          echo "container_group_2=$CONTAINER_GROUP_2" >> $GITHUB_OUTPUT
+          echo "resource_group=$RESOURCE_GROUP" >> $GITHUB_OUTPUT
+          echo "deploy_dual_brokers=$DEPLOY_DUAL_BROKERS" >> $GITHUB_OUTPUT
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Check mqtt-1 status
+        run: |
+          echo "Checking ${{ steps.env.outputs.container_group_1 }} status..."
+
+          STATE=$(az container show \
+            --resource-group ${{ steps.env.outputs.resource_group }} \
+            --name ${{ steps.env.outputs.container_group_1 }} \
+            --query "containers[0].instanceView.currentState.state" -o tsv)
+
+          echo "State: $STATE"
+
+          if [ "$STATE" != "Running" ]; then
+            echo "❌ Container not running!"
+            exit 1
+          fi
+
+          echo "✅ mqtt-1 is running"
+
+      - name: Check mqtt-2 status
+        if: steps.env.outputs.deploy_dual_brokers == 'true'
+        run: |
+          echo "Checking ${{ steps.env.outputs.container_group_2 }} status..."
+
+          STATE=$(az container show \
+            --resource-group ${{ steps.env.outputs.resource_group }} \
+            --name ${{ steps.env.outputs.container_group_2 }} \
+            --query "containers[0].instanceView.currentState.state" -o tsv)
+
+          echo "State: $STATE"
+
+          if [ "$STATE" != "Running" ]; then
+            echo "❌ Container not running!"
+            exit 1
+          fi
+
+          echo "✅ mqtt-2 is running"
+
+      - name: Deployment Summary
+        run: |
+          echo "## 🎉 Deployment Successful" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ needs.deploy-certificates.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** ${{ needs.build.outputs.image_full }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Containers:** Running" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
