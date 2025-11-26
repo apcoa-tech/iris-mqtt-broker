@@ -243,7 +243,13 @@ jobs:
 
           echo "✅ mosquitto.conf for mqtt-2 generated"
 
-      - name: Generate password files
+      - name: Install Mosquitto tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mosquitto mosquitto-clients
+          echo "✅ Mosquitto tools installed"
+
+      - name: Generate MQTT authentication file
         run: |
           ./scripts/generate-password-file.sh \
             "${{ secrets.PASSWORD_DEVICE_USER }}" \
@@ -251,7 +257,7 @@ jobs:
             "${{ secrets.PASSWORD_EXTERNAL_INTEGRATION_USER }}" \
             /tmp/password.txt
 
-          echo "✅ Password file generated"
+          echo "✅ MQTT user credentials configured"
 
       - name: Upload configuration files
         env:
