@@ -14,6 +14,63 @@ The MQTT broker runs on Azure Container Instances with persistent storage backed
 
 ## Architecture
 
+### IRIS Platform Message Flow
+
+```
+┌──────────────┐
+│   Cameras    │ (IoT Devices)
+│  Advantech   │
+└──────┬───────┘
+       │ Send images/events
+       │
+       ▼
+┌─────────────────────────────────────────────────────┐
+│ Camera Ingestion Service                           │
+│  - Receives camera data                            │
+│  - Processes and validates                         │
+│  - Publishes to Service Bus                        │
+└────────────────────┬────────────────────────────────┘
+                     │
+                     │ Messages
+                     ▼
+┌─────────────────────────────────────────────────────┐
+│ Azure Service Bus                                  │
+│  - Message queue/topic                             │
+│  - Decouples services                              │
+│  - Ensures reliable delivery                       │
+└────────────────────┬────────────────────────────────┘
+                     │
+                     │ Consume messages
+                     ▼
+┌─────────────────────────────────────────────────────┐
+│ Gate Service                                       │
+│  - Processes Service Bus messages                  │
+│  - Business logic and transformations              │
+│  - Publishes to MQTT Broker                        │
+└────────────────────┬────────────────────────────────┘
+                     │
+                     │ Publish to MQTT
+                     ▼
+┌─────────────────────────────────────────────────────┐
+│ IRIS MQTT Broker (THIS REPOSITORY)                │
+│  - Eclipse Mosquitto 2.0.22                        │
+│  - Running on Azure Container Instances            │
+│  - TLS encryption (port 8883)                      │
+│  - Bidirectional bridge to external broker         │
+└────────────────────┬────────────────────────────────┘
+                     │
+                     │ Bridge connection (TLS)
+                     ▼
+┌─────────────────────────────────────────────────────┐
+│ External Company MQTT Broker                       │
+│  - Receives replicated messages                    │
+│  - Topics: Advantech/74FE4857C133/#                │
+│            Advantech/74FE4857C1B3/#                │
+└─────────────────────────────────────────────────────┘
+```
+
+### Infrastructure Deployment
+
 ```
 ┌─────────────────────────────────────────────────────┐
 │ GitHub Repository (iris-mqtt-broker)               │
@@ -27,7 +84,7 @@ The MQTT broker runs on Azure Container Instances with persistent storage backed
 ┌─────────────────────────────────────────────────────┐
 │ GitHub Actions (OIDC authenticated)                │
 │  1. Build Docker image → Push to ACR               │
-│  2. Fetch secrets from Key Vault                   │
+│  2. Fetch secrets from GitHub Secrets              │
 │  3. Generate mosquitto.conf + password.txt         │
 │  4. Upload to Azure File Share                     │
 │  5. Restart container                              │
@@ -36,19 +93,12 @@ The MQTT broker runs on Azure Container Instances with persistent storage backed
                     ▼
 ┌─────────────────────────────────────────────────────┐
 │ Azure Container Instances                          │
-│  ├─ Mosquitto container (custom image)             │
+│  (Provisioned by iris-container-instance-plugin)   │
+│  ├─ mqtt-1: Primary broker (West Europe)           │
+│  ├─ mqtt-2: External company simulator             │
 │  ├─ Mounts: config, data, certs file shares        │
 │  ├─ Listens on port 8883 (MQTTS)                   │
-│  └─ Bridges to production broker                   │
-└─────────────────────────────────────────────────────┘
-                    │
-                    │ Bridge connection
-                    ▼
-┌─────────────────────────────────────────────────────┐
-│ Production MQTT Broker                             │
-│  Address: 3.121.198.76:8883                        │
-│  Topics: Advantech/74FE4857C133/#                  │
-│          Advantech/74FE4857C1B3/#                  │
+│  └─ Bidirectional bridge between brokers           │
 └─────────────────────────────────────────────────────┘
 ```
 

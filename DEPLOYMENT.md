@@ -10,7 +10,7 @@ This guide covers deploying MQTT broker configurations to Azure Container Instan
 ```
 IoT Devices
     │
-    ├──> mqtt-1 (iris-dev-mqtt-1.westeurope.azurecontainer.io:8883)
+    ├──> iris-services -> mqtt-1 (iris-dev-mqtt-1.westeurope.azurecontainer.io:8883)
     │    OUR MQTT Broker (simulates production)
     │    │
     │    └──bridge──> mqtt-2 (iris-dev-mqtt-2.westeurope.azurecontainer.io:8883)
@@ -23,7 +23,7 @@ IoT Devices
 ```
 IoT Devices
     │
-    └──> mqtt (iris-prd-mqtt.westeurope.azurecontainer.io:8883)
+    └──> iris-services -> mqtt (iris-prd-mqtt.westeurope.azurecontainer.io:8883)
          OUR MQTT Broker
          │
          └──bridge──> External Company's MQTT Broker
