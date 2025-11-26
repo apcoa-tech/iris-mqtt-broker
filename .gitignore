@@ -3,6 +3,8 @@
 *.pem
 password.txt
 mosquitto.conf
+PASSWORDS.md
+config/mqtt_explorer.env
 .settings.json
 
 # Keep only templates

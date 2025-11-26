@@ -1,0 +1,22 @@
+{
+  "profiles": [
+    {
+      "name": "IRIS Dev - mqtt-1",
+      "protocol": "mqtts",
+      "host": "iris-dev-mqtt-1.westeurope.azurecontainer.io",
+      "port": 8883,
+      "username": "deviceuser",
+      "password": "${MQTT_USER_DEVICEUSER_PASSWORD}",
+      "rejectUnauthorized": false
+    },
+    {
+      "name": "IRIS Dev - mqtt-2",
+      "protocol": "mqtts",
+      "host": "iris-dev-mqtt-2.westeurope.azurecontainer.io",
+      "port": 8883,
+      "username": "external_integration_user",
+      "password": "${MQTT_BRIDGE_PASSWORD}",
+      "rejectUnauthorized": false
+    }
+  ]
+}

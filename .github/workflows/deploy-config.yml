@@ -171,21 +171,32 @@ jobs:
       - name: Use production certificates (from repo)
         id: repo_certs
         if: steps.cert_check.outputs.cert_exists == 'false'
+        env:
+          MQTT_SERVER_KEY: ${{ secrets.MQTT_SERVER_KEY }}
         run: |
           CERT_SOURCE="none"
           mkdir -p /tmp/certs
 
-          # Check if prd_broker_certs directory exists with all required files
+          # Check if prd_broker_certs directory exists with public certs
+          # Private key (server.key) comes from GitHub Secrets
           if [ -d "prd_broker_certs" ] && \
              [ -f "prd_broker_certs/ca.crt" ] && \
-             [ -f "prd_broker_certs/server.crt" ] && \
-             [ -f "prd_broker_certs/server.key" ]; then
+             [ -f "prd_broker_certs/server.crt" ]; then
             echo "🔐 Using production certificates from prd_broker_certs/"
             cp prd_broker_certs/ca.crt /tmp/certs/ca.crt
             cp prd_broker_certs/server.crt /tmp/certs/server.crt
-            cp prd_broker_certs/server.key /tmp/certs/server.key
-            CERT_SOURCE="repo"
-            echo "✅ Production certificates loaded from repository"
+
+            # Get private key from GitHub Secrets
+            if [ -n "$MQTT_SERVER_KEY" ]; then
+              echo "$MQTT_SERVER_KEY" > /tmp/certs/server.key
+              chmod 600 /tmp/certs/server.key
+              echo "✅ Production certificates loaded (public from repo, private key from secrets)"
+              CERT_SOURCE="repo"
+            else
+              echo "❌ MQTT_SERVER_KEY secret not found!"
+              echo "Please add the server.key content to GitHub Secrets as MQTT_SERVER_KEY"
+              exit 1
+            fi
           else
             echo "⚠️  Production certificates not found in prd_broker_certs/"
           fi
