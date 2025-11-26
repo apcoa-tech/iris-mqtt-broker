@@ -168,8 +168,37 @@ jobs:
           echo "cert_exists=$CERT_EXISTS" >> $GITHUB_OUTPUT
           echo "📋 Certificates exist: $CERT_EXISTS"
 
-      - name: Generate self-signed certificates (Dev/UAT - if missing)
-        if: steps.cert_check.outputs.cert_exists == 'false' && env.ENVIRONMENT != 'prd'
+      - name: Use production certificates (from repo)
+        id: repo_certs
+        if: steps.cert_check.outputs.cert_exists == 'false'
+        run: |
+          CERT_SOURCE="none"
+          mkdir -p /tmp/certs
+
+          # Check if prd_broker_certs directory exists with all required files
+          if [ -d "prd_broker_certs" ] && \
+             [ -f "prd_broker_certs/ca.crt" ] && \
+             [ -f "prd_broker_certs/server.crt" ] && \
+             [ -f "prd_broker_certs/server.key" ]; then
+            echo "🔐 Using production certificates from prd_broker_certs/"
+            cp prd_broker_certs/ca.crt /tmp/certs/ca.crt
+            cp prd_broker_certs/server.crt /tmp/certs/server.crt
+            cp prd_broker_certs/server.key /tmp/certs/server.key
+            CERT_SOURCE="repo"
+            echo "✅ Production certificates loaded from repository"
+          else
+            echo "⚠️  Production certificates not found in prd_broker_certs/"
+          fi
+
+          # Copy production_ca.crt for bridge if it exists
+          if [ -f "docker/bridge_certs/production_ca.crt" ]; then
+            cp docker/bridge_certs/production_ca.crt /tmp/certs/production_ca.crt
+          fi
+
+          echo "cert_source=$CERT_SOURCE" >> $GITHUB_OUTPUT
+
+      - name: Generate self-signed certificates (Dev/UAT - if repo certs missing)
+        if: steps.cert_check.outputs.cert_exists == 'false' && steps.repo_certs.outputs.cert_source == 'none' && env.ENVIRONMENT != 'prd'
         run: |
           echo "🔐 Generating self-signed certificates for ${{ env.ENVIRONMENT }} environment..."
           mkdir -p /tmp/certs
@@ -186,10 +215,12 @@ jobs:
           cp /tmp/certs/server.key /tmp/certs/ca.key
 
           # Generate production CA (self-signed for dev/uat testing)
-          openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-            -keyout /tmp/certs/production_ca.key \
-            -out /tmp/certs/production_ca.crt \
-            -subj "/CN=Production CA Simulator/O=APCOA/C=DE"
+          if [ ! -f "/tmp/certs/production_ca.crt" ]; then
+            openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+              -keyout /tmp/certs/production_ca.key \
+              -out /tmp/certs/production_ca.crt \
+              -subj "/CN=Production CA Simulator/O=APCOA/C=DE"
+          fi
 
           echo "✅ Self-signed certificates generated"
 
