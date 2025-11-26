@@ -34,14 +34,46 @@ env:
 
 jobs:
   # ============================================================
-  # STAGE 1: Build Docker Image
+  # STAGE 0: Check what changed
+  # ============================================================
+  check-changes:
+    name: 🔍 Check Changes
+    runs-on: ubuntu-latest
+    outputs:
+      docker_changed: ${{ steps.changes.outputs.docker }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for docker changes
+        id: changes
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            # Manual trigger with specific image tag - skip build
+            echo "docker=false" >> $GITHUB_OUTPUT
+            echo "⏭️  Manual trigger with specific image tag - will skip build"
+          elif git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep -qE '^docker/'; then
+            echo "docker=true" >> $GITHUB_OUTPUT
+            echo "🔨 Docker files changed - will build new image"
+          else
+            echo "docker=false" >> $GITHUB_OUTPUT
+            echo "⏭️  No docker changes - will use existing latest image"
+          fi
+
+  # ============================================================
+  # STAGE 1: Build Docker Image (conditional)
   # ============================================================
   build:
     name: 🔨 Build Image
     runs-on: ubuntu-latest
+    needs: check-changes
+    if: needs.check-changes.outputs.docker_changed == 'true'
     outputs:
       image_tag: ${{ steps.tags.outputs.tag }}
       image_full: ${{ steps.tags.outputs.full }}
+      image_built: ${{ steps.tags.outputs.built }}
 
     steps:
       - name: Checkout code
@@ -60,6 +92,7 @@ jobs:
 
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "full=$FULL_TAG" >> $GITHUB_OUTPUT
+          echo "built=true" >> $GITHUB_OUTPUT
           echo "📦 Image tag: $TAG"
 
       - name: Azure Login with OIDC
@@ -102,20 +135,69 @@ jobs:
           echo "✅ Image pushed: ${{ steps.tags.outputs.full }}"
 
   # ============================================================
+  # STAGE 1b: Use existing image (if build skipped)
+  # ============================================================
+  use-existing-image:
+    name: 📦 Use Existing Image
+    runs-on: ubuntu-latest
+    needs: check-changes
+    if: needs.check-changes.outputs.docker_changed == 'false'
+    outputs:
+      image_tag: ${{ steps.existing.outputs.tag }}
+      image_full: ${{ steps.existing.outputs.full }}
+      image_built: ${{ steps.existing.outputs.built }}
+
+    steps:
+      - name: Set existing image tag
+        id: existing
+        run: |
+          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            TAG="${{ github.event.inputs.image_tag }}"
+          else
+            TAG="latest"
+          fi
+
+          FULL_TAG="${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:$TAG"
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "full=$FULL_TAG" >> $GITHUB_OUTPUT
+          echo "built=false" >> $GITHUB_OUTPUT
+          echo "📦 Using existing image: $FULL_TAG"
+
+  # ============================================================
   # STAGE 2: Deploy Certificates
   # ============================================================
   deploy-certificates:
     name: 🔐 Deploy Certificates
     runs-on: ubuntu-latest
-    needs: build
+    needs: [check-changes, build, use-existing-image]
+    if: always() && (needs.build.result == 'success' || needs.use-existing-image.result == 'success')
     outputs:
       environment: ${{ steps.env.outputs.environment }}
       storage_account: ${{ steps.env.outputs.storage_account }}
       storage_key: ${{ steps.storage.outputs.storage_key }}
+      image_tag: ${{ steps.image.outputs.tag }}
+      image_full: ${{ steps.image.outputs.full }}
+      image_built: ${{ steps.image.outputs.built }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Determine image to use
+        id: image
+        run: |
+          if [ "${{ needs.build.result }}" == "success" ]; then
+            echo "tag=${{ needs.build.outputs.image_tag }}" >> $GITHUB_OUTPUT
+            echo "full=${{ needs.build.outputs.image_full }}" >> $GITHUB_OUTPUT
+            echo "built=${{ needs.build.outputs.image_built }}" >> $GITHUB_OUTPUT
+            echo "🔨 Using newly built image: ${{ needs.build.outputs.image_full }}"
+          else
+            echo "tag=${{ needs.use-existing-image.outputs.image_tag }}" >> $GITHUB_OUTPUT
+            echo "full=${{ needs.use-existing-image.outputs.image_full }}" >> $GITHUB_OUTPUT
+            echo "built=${{ needs.use-existing-image.outputs.image_built }}" >> $GITHUB_OUTPUT
+            echo "📦 Using existing image: ${{ needs.use-existing-image.outputs.image_full }}"
+          fi
 
       - name: Load environment config
         id: env
@@ -249,13 +331,32 @@ jobs:
           sudo apt-get install -y mosquitto mosquitto-clients
           echo "✅ Mosquitto tools installed"
 
+      - name: Setup user passwords from GitHub Secrets
+        run: |
+          echo "Setting up user passwords from GitHub Secrets..."
+
+          # deviceuser password
+          PASSWORD_DEVICEUSER="${{ secrets.MQTT_USER_DEVICEUSER_PASSWORD }}"
+          echo "::add-mask::$PASSWORD_DEVICEUSER"
+          echo "PASSWORD_DEVICEUSER=$PASSWORD_DEVICEUSER" >> $GITHUB_ENV
+
+          # adminuser password
+          PASSWORD_ADMINUSER="${{ secrets.MQTT_USER_ADMINUSER_PASSWORD }}"
+          echo "::add-mask::$PASSWORD_ADMINUSER"
+          echo "PASSWORD_ADMINUSER=$PASSWORD_ADMINUSER" >> $GITHUB_ENV
+
+          # external_integration_user password
+          PASSWORD_EXTERNAL_INTEGRATION_USER="${{ secrets.MQTT_BRIDGE_PASSWORD }}"
+          echo "::add-mask::$PASSWORD_EXTERNAL_INTEGRATION_USER"
+          echo "PASSWORD_EXTERNAL_INTEGRATION_USER=$PASSWORD_EXTERNAL_INTEGRATION_USER" >> $GITHUB_ENV
+
+          echo "✅ User passwords configured"
+
       - name: Generate MQTT authentication file
         run: |
           ./scripts/generate-password-file.sh \
-            "${{ secrets.PASSWORD_DEVICE_USER }}" \
-            "${{ secrets.PASSWORD_ADMIN_USER }}" \
-            "${{ secrets.PASSWORD_EXTERNAL_INTEGRATION_USER }}" \
-            /tmp/password.txt
+            /tmp/password.txt \
+            deviceuser,adminuser,external_integration_user
 
           echo "✅ MQTT user credentials configured"
 
@@ -296,7 +397,7 @@ jobs:
   restart-containers:
     name: 🔄 Restart Containers
     runs-on: ubuntu-latest
-    needs: [deploy-configuration, build]
+    needs: [deploy-configuration, deploy-certificates]
 
     steps:
       - name: Checkout code
@@ -413,6 +514,14 @@ jobs:
           echo "## 🎉 Deployment Successful" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Environment:** ${{ needs.deploy-certificates.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Image:** ${{ needs.build.outputs.image_full }}" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.deploy-certificates.outputs.image_built }}" == "true" ]; then
+            echo "**Image:** ${{ needs.deploy-certificates.outputs.image_full }} 🆕" >> $GITHUB_STEP_SUMMARY
+            echo "**Build:** New image built and deployed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Image:** ${{ needs.deploy-certificates.outputs.image_full }}" >> $GITHUB_STEP_SUMMARY
+            echo "**Build:** Used existing image (no docker changes)" >> $GITHUB_STEP_SUMMARY
+          fi
+
           echo "**Containers:** Running" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
