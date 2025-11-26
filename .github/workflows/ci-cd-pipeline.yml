@@ -463,7 +463,7 @@ jobs:
   verify:
     name: ✅ Verify Deployment
     runs-on: ubuntu-latest
-    needs: restart-containers
+    needs: [restart-containers, deploy-certificates]
     if: always() && needs.restart-containers.result == 'success'
 
     steps:
