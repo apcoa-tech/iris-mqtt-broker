@@ -50,16 +50,29 @@ jobs:
       - name: Check for docker changes
         id: changes
         run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ -n "${{ github.event.inputs.image_tag }}" ]; then
-            # Manual trigger with specific image tag - skip build
-            echo "docker=false" >> $GITHUB_OUTPUT
-            echo "⏭️  Manual trigger with specific image tag - will skip build"
-          elif git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep -qE '^docker/'; then
-            echo "docker=true" >> $GITHUB_OUTPUT
-            echo "🔨 Docker files changed - will build new image"
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            # Manual trigger - check if specific image tag provided
+            if [ -n "${{ github.event.inputs.image_tag }}" ]; then
+              echo "docker=false" >> $GITHUB_OUTPUT
+              echo "⏭️  Manual trigger with specific image tag - will skip build"
+            else
+              # Manual trigger without image tag - use existing latest image
+              echo "docker=false" >> $GITHUB_OUTPUT
+              echo "📦 Manual trigger - will use existing latest image"
+            fi
+          elif [ -n "${{ github.event.before }}" ]; then
+            # Push event - check what files changed
+            if git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep -qE '^docker/'; then
+              echo "docker=true" >> $GITHUB_OUTPUT
+              echo "🔨 Docker files changed - will build new image"
+            else
+              echo "docker=false" >> $GITHUB_OUTPUT
+              echo "⏭️  No docker changes - will use existing latest image"
+            fi
           else
+            # Fallback - use existing image
             echo "docker=false" >> $GITHUB_OUTPUT
-            echo "⏭️  No docker changes - will use existing latest image"
+            echo "📦 Using existing latest image (no before commit)"
           fi
 
   # ============================================================
