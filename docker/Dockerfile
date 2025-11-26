@@ -7,24 +7,15 @@ LABEL maintainer="APCOA IRIS Team"
 LABEL description="Custom Mosquitto MQTT broker with bridge configuration for IRIS project"
 LABEL version="1.0.1"
 
-# Copy static bridge CA certificate (not sensitive, rarely changes)
-# This is the CA cert for verifying the remote production broker
-COPY bridge_certs/production_ca.crt /mosquitto/bridge_certs/production_ca.crt
-
 # Create necessary directories
 RUN mkdir -p /mosquitto/config \
     /mosquitto/data \
-    /mosquitto/certs \
-    /mosquitto/bridge_certs
+    /mosquitto/certs
 
 # Set proper permissions
 RUN chown -R mosquitto:mosquitto /mosquitto/config \
     /mosquitto/data \
-    /mosquitto/certs \
-    /mosquitto/bridge_certs
-
-# Set proper file permissions for bridge CA cert
-RUN chmod 644 /mosquitto/bridge_certs/production_ca.crt
+    /mosquitto/certs
 
 # Expose MQTTS port
 EXPOSE 8883
