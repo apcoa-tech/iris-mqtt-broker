@@ -37,7 +37,7 @@ jobs:
   # STAGE 0: Check what changed
   # ============================================================
   check-changes:
-    name: 🔍 Check Changes
+    name: Check Changes
     runs-on: ubuntu-latest
     outputs:
       docker_changed: ${{ steps.changes.outputs.docker }}
@@ -54,32 +54,32 @@ jobs:
             # Manual trigger - check if specific image tag provided
             if [ -n "${{ github.event.inputs.image_tag }}" ]; then
               echo "docker=false" >> $GITHUB_OUTPUT
-              echo "⏭️  Manual trigger with specific image tag - will skip build"
+              echo "Manual trigger with specific image tag - will skip build"
             else
               # Manual trigger without image tag - use existing latest image
               echo "docker=false" >> $GITHUB_OUTPUT
-              echo "📦 Manual trigger - will use existing latest image"
+              echo "Manual trigger - will use existing latest image"
             fi
           elif [ -n "${{ github.event.before }}" ]; then
             # Push event - check what files changed
             if git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep -qE '^docker/'; then
               echo "docker=true" >> $GITHUB_OUTPUT
-              echo "🔨 Docker files changed - will build new image"
+              echo "Docker files changed - will build new image"
             else
               echo "docker=false" >> $GITHUB_OUTPUT
-              echo "⏭️  No docker changes - will use existing latest image"
+              echo "No docker changes - will use existing latest image"
             fi
           else
             # Fallback - use existing image
             echo "docker=false" >> $GITHUB_OUTPUT
-            echo "📦 Using existing latest image (no before commit)"
+            echo "Using existing latest image (no before commit)"
           fi
 
   # ============================================================
   # STAGE 1: Build Docker Image (conditional)
   # ============================================================
   build:
-    name: 🔨 Build Image
+    name: Build Image
     runs-on: ubuntu-latest
     needs: check-changes
     if: needs.check-changes.outputs.docker_changed == 'true'
@@ -106,7 +106,7 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "full=$FULL_TAG" >> $GITHUB_OUTPUT
           echo "built=true" >> $GITHUB_OUTPUT
-          echo "📦 Image tag: $TAG"
+          echo "Image tag: $TAG"
 
       - name: Azure Login with OIDC
         uses: azure/login@v2
@@ -129,7 +129,7 @@ jobs:
             --label "build.date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
             .
 
-          echo "✅ Image built successfully"
+          echo "Image built successfully"
 
       - name: Scan image for vulnerabilities
         continue-on-error: true
@@ -145,13 +145,13 @@ jobs:
           docker push ${{ steps.tags.outputs.full }}
           docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:latest
 
-          echo "✅ Image pushed: ${{ steps.tags.outputs.full }}"
+          echo "Image pushed: ${{ steps.tags.outputs.full }}"
 
   # ============================================================
   # STAGE 1b: Use existing image (if build skipped)
   # ============================================================
   use-existing-image:
-    name: 📦 Use Existing Image
+    name: Use Existing Image
     runs-on: ubuntu-latest
     needs: check-changes
     if: needs.check-changes.outputs.docker_changed == 'false'
@@ -175,13 +175,13 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "full=$FULL_TAG" >> $GITHUB_OUTPUT
           echo "built=false" >> $GITHUB_OUTPUT
-          echo "📦 Using existing image: $FULL_TAG"
+          echo "Using existing image: $FULL_TAG"
 
   # ============================================================
   # STAGE 2: Deploy Certificates
   # ============================================================
   deploy-certificates:
-    name: 🔐 Deploy Certificates
+    name: Deploy Certificates
     runs-on: ubuntu-latest
     needs: [check-changes, build, use-existing-image]
     if: always() && (needs.build.result == 'success' || needs.use-existing-image.result == 'success')
@@ -204,12 +204,12 @@ jobs:
             echo "tag=${{ needs.build.outputs.image_tag }}" >> $GITHUB_OUTPUT
             echo "full=${{ needs.build.outputs.image_full }}" >> $GITHUB_OUTPUT
             echo "built=${{ needs.build.outputs.image_built }}" >> $GITHUB_OUTPUT
-            echo "🔨 Using newly built image: ${{ needs.build.outputs.image_full }}"
+            echo "Using newly built image: ${{ needs.build.outputs.image_full }}"
           else
             echo "tag=${{ needs.use-existing-image.outputs.image_tag }}" >> $GITHUB_OUTPUT
             echo "full=${{ needs.use-existing-image.outputs.image_full }}" >> $GITHUB_OUTPUT
             echo "built=${{ needs.use-existing-image.outputs.image_built }}" >> $GITHUB_OUTPUT
-            echo "📦 Using existing image: ${{ needs.use-existing-image.outputs.image_full }}"
+            echo "Using existing image: ${{ needs.use-existing-image.outputs.image_full }}"
           fi
 
       - name: Load environment config
@@ -253,10 +253,10 @@ jobs:
 
           if az storage file exists --share-name "$CERTS_SHARE" --path ca.crt --query exists -o tsv | grep -q true; then
             echo "cert_exists=true" >> $GITHUB_OUTPUT
-            echo "✅ Certificates already exist in Azure"
+            echo "Certificates already exist in Azure"
           else
             echo "cert_exists=false" >> $GITHUB_OUTPUT
-            echo "⚠️  Certificates not found - will deploy"
+            echo "Certificates not found - will deploy"
           fi
 
       - name: Deploy production certificates
@@ -284,13 +284,13 @@ jobs:
           az storage file upload --share-name "$CERTS_SHARE" \
             --source /tmp/certs/ca.crt --path ca.crt
 
-          echo "✅ TLS certificates uploaded"
+          echo "TLS certificates uploaded"
 
   # ============================================================
   # STAGE 3: Deploy Configuration
   # ============================================================
   deploy-configuration:
-    name: ⚙️ Deploy Config
+    name: Deploy Config
     runs-on: ubuntu-latest
     needs: deploy-certificates
     if: always() && needs.deploy-certificates.result == 'success'
@@ -328,7 +328,7 @@ jobs:
             config/mosquitto-mqtt-1.conf.template \
             /tmp/mosquitto-1.conf
 
-          echo "✅ mosquitto.conf for mqtt-1 generated"
+          echo "mosquitto.conf for mqtt-1 generated"
 
       - name: Generate mosquitto.conf for mqtt-2
         if: steps.env.outputs.deploy_dual_brokers == 'true'
@@ -337,13 +337,13 @@ jobs:
             config/mosquitto-mqtt-2.conf.template \
             /tmp/mosquitto-2.conf
 
-          echo "✅ mosquitto.conf for mqtt-2 generated"
+          echo "mosquitto.conf for mqtt-2 generated"
 
       - name: Install Mosquitto tools
         run: |
           sudo apt-get update
           sudo apt-get install -y mosquitto mosquitto-clients
-          echo "✅ Mosquitto tools installed"
+          echo "Mosquitto tools installed"
 
       - name: Setup user passwords from GitHub Secrets
         run: |
@@ -364,7 +364,7 @@ jobs:
           echo "::add-mask::$PASSWORD_EXTERNAL_INTEGRATION_USER"
           echo "PASSWORD_EXTERNAL_INTEGRATION_USER=$PASSWORD_EXTERNAL_INTEGRATION_USER" >> $GITHUB_ENV
 
-          echo "✅ User passwords configured"
+          echo "User passwords configured"
 
       - name: Generate MQTT authentication file
         run: |
@@ -372,7 +372,7 @@ jobs:
             /tmp/password.txt \
             deviceuser,adminuser,external_integration_user
 
-          echo "✅ MQTT user credentials configured"
+          echo "MQTT user credentials configured"
 
       - name: Upload configuration files
         env:
@@ -403,13 +403,13 @@ jobs:
             --source /tmp/password.txt \
             --path password.txt
 
-          echo "✅ Configuration files uploaded"
+          echo "Configuration files uploaded"
 
   # ============================================================
   # STAGE 4: Restart Containers
   # ============================================================
   restart-containers:
-    name: 🔄 Restart Containers
+    name: Restart Containers
     runs-on: ubuntu-latest
     needs: [deploy-configuration, deploy-certificates]
     if: always() && needs.deploy-configuration.result == 'success'
@@ -438,32 +438,32 @@ jobs:
 
       - name: Restart mqtt-1 container
         run: |
-          echo "🔄 Restarting ${{ steps.env.outputs.container_group_1 }}..."
+          echo "Restarting ${{ steps.env.outputs.container_group_1 }}..."
 
           az container restart \
             --resource-group ${{ steps.env.outputs.resource_group }} \
             --name ${{ steps.env.outputs.container_group_1 }}
 
-          echo "✅ Container restarted"
+          echo "Container restarted"
 
       - name: Restart mqtt-2 container
         if: steps.env.outputs.deploy_dual_brokers == 'true'
         run: |
-          echo "🔄 Restarting ${{ steps.env.outputs.container_group_2 }}..."
+          echo "Restarting ${{ steps.env.outputs.container_group_2 }}..."
 
           az container restart \
             --resource-group ${{ steps.env.outputs.resource_group }} \
             --name ${{ steps.env.outputs.container_group_2 }}
 
-          echo "✅ Container restarted"
+          echo "Container restarted"
 
   # ============================================================
   # STAGE 5: Verify Deployment
   # ============================================================
   verify:
-    name: ✅ Verify Deployment
+    name: Verify Deployment
     runs-on: ubuntu-latest
-    needs: restart-containers
+    needs: [restart-containers, deploy-certificates]
     if: always() && needs.restart-containers.result == 'success'
 
     steps:
@@ -500,11 +500,11 @@ jobs:
           echo "State: $STATE"
 
           if [ "$STATE" != "Running" ]; then
-            echo "❌ Container not running!"
+            echo "Container not running!"
             exit 1
           fi
 
-          echo "✅ mqtt-1 is running"
+          echo "mqtt-1 is running"
 
       - name: Check mqtt-2 status
         if: steps.env.outputs.deploy_dual_brokers == 'true'
@@ -519,11 +519,11 @@ jobs:
           echo "State: $STATE"
 
           if [ "$STATE" != "Running" ]; then
-            echo "❌ Container not running!"
+            echo "Container not running!"
             exit 1
           fi
 
-          echo "✅ mqtt-2 is running"
+          echo "mqtt-2 is running"
 
       - name: Deployment Summary
         run: |
@@ -532,7 +532,7 @@ jobs:
           echo "**Environment:** ${{ needs.deploy-certificates.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
 
           if [ "${{ needs.deploy-certificates.outputs.image_built }}" == "true" ]; then
-            echo "**Image:** ${{ needs.deploy-certificates.outputs.image_full }} 🆕" >> $GITHUB_STEP_SUMMARY
+            echo "**Image:** ${{ needs.deploy-certificates.outputs.image_full }} (new)" >> $GITHUB_STEP_SUMMARY
             echo "**Build:** New image built and deployed" >> $GITHUB_STEP_SUMMARY
           else
             echo "**Image:** ${{ needs.deploy-certificates.outputs.image_full }}" >> $GITHUB_STEP_SUMMARY
